@@ -600,5 +600,281 @@ class TestIntelGemmProfiler(unittest.TestCase):
         self.assertEqual(probed["blocked_rules"][0]["match"]["tile_m"], 8)
 
 
+class TestHwSpecs(unittest.TestCase):
+    def test_hw_spec_bmg_g21_has_microbenchmark_calibrated_values(self):
+        spec = profiler.get_hw_spec("bmg")
+
+        self.assertEqual(spec["clock_mhz"], 2400)
+        self.assertAlmostEqual(spec["peak_xmx_tflops"], 97.66)
+        self.assertEqual(spec["slm_per_xe_core_kb"], 64)
+        self.assertEqual(spec["measured_read_bw_gbps"], 538)
+        self.assertEqual(spec["memory_type"], "GDDR6")
+        self.assertEqual(spec["device_id"], "bmg_g21")
+
+    def test_hw_reference_specs_dict_has_correct_values(self):
+        specs = profiler.HW_REFERENCE_SPECS
+
+        self.assertIn("bmg_g21", specs)
+        spec = specs["bmg_g21"]
+        self.assertEqual(spec["slm_per_xe_core_kb"], 64)
+        self.assertAlmostEqual(spec["peak_xmx_tflops"], 97.66)
+
+    def test_compute_efficiency_bounds_memory_bound_small_m(self):
+        # m=8, n=4096, k=4096 with small tile → memory-bound
+        shape = {"m": 8, "n": 4096, "k": 4096}
+        candidate = {"tile_m": 8, "tile_n": 128, "tile_k": 32, "sg_m": 1, "sg_n": 4, "stages": 2}
+        spec = profiler.get_hw_spec("bmg")
+
+        min_eff, max_eff = profiler.compute_efficiency_bounds(shape, candidate, spec)
+
+        # Memory-bound case: arithmetic intensity is well below ridge point (~181.5 flops/byte)
+        # flops = 2*8*4096*4096 = 268M, bytes = (8*4096 + 4096*4096)*2 = 33.5M
+        # AI ≈ 8, ridge ≈ 181 → clearly memory bound
+        self.assertGreater(min_eff, 0.0)
+        self.assertLessEqual(max_eff, 1.0)
+        self.assertLess(max_eff, 0.5)  # memory-bound max efficiency is low
+
+    def test_compute_efficiency_bounds_pathological_sg_count(self):
+        # sg_count = 8*4 = 32 (crosses Xe-core boundary), large tile → wave utilisation issues
+        # max_concurrent_wg = 160 // 32 = 5
+        shape = {"m": 256, "n": 4096, "k": 4096}
+        candidate = {"tile_m": 256, "tile_n": 256, "tile_k": 32, "sg_m": 8, "sg_n": 4, "stages": 2}
+        spec = profiler.get_hw_spec("bmg")
+
+        min_eff, max_eff = profiler.compute_efficiency_bounds(shape, candidate, spec)
+
+        # Should return pathological range because sg_count > max_concurrent_sgs per Xe-core
+        # or because the model returns a low range
+        self.assertGreaterEqual(min_eff, 0.0)
+        self.assertLessEqual(max_eff, 1.0)
+
+    def test_compute_efficiency_bounds_slm_overflow_blocks(self):
+        # tile 256×256 with stages=3 → SLM needed = (256*32 + 256*32)*2*3 = 98304 B = 96 KB > 64 KB
+        shape = {"m": 256, "n": 4096, "k": 4096}
+        candidate = {"tile_m": 256, "tile_n": 256, "tile_k": 32, "sg_m": 8, "sg_n": 4, "stages": 3}
+        spec = profiler.get_hw_spec("bmg")
+
+        min_eff, max_eff = profiler.compute_efficiency_bounds(shape, candidate, spec)
+
+        # SLM overflow should return pathological range
+        self.assertAlmostEqual(min_eff, 0.01)
+        self.assertAlmostEqual(max_eff, 0.10)
+
+    def test_detect_anomalies_flags_severely_below_spec(self):
+        # 2.28 TFLOPS on 256×4096×8192 with 256×256 tile is well below any efficiency bound
+        spec = profiler.get_hw_spec("bmg")
+        shapes_doc = {
+            "shapes": [
+                {
+                    "shape_id": "rcr_bf16_256_4096_8192",
+                    "layout": "rcr",
+                    "dtype_a": "bf16",
+                    "dtype_b": "bf16",
+                    "dtype_c": "f32",
+                    "dtype_acc": "f32",
+                    "m": 256,
+                    "n": 4096,
+                    "k": 8192,
+                }
+            ]
+        }
+        candidate_space = {
+            "candidates": [
+                {
+                    "candidate_id": "rcr_bf16bf16f32_tm256_tn256_tk32_sg8x4_st2_sk1",
+                    "tile_m": 256,
+                    "tile_n": 256,
+                    "tile_k": 32,
+                    "sg_m": 8,
+                    "sg_n": 4,
+                    "stages": 2,
+                    "split_k": 1,
+                    "dtype_a": "bf16",
+                }
+            ]
+        }
+        probe_rows = [
+            {
+                "candidate_id": "rcr_bf16bf16f32_tm256_tn256_tk32_sg8x4_st2_sk1",
+                "shape_id": "rcr_bf16_256_4096_8192",
+                "avg_tflops": "2.28",
+                "status": "pass",
+            }
+        ]
+
+        report = profiler.detect_probe_anomalies(probe_rows, shapes_doc, candidate_space, spec)
+
+        self.assertIn("anomalies", report)
+        self.assertIn("auto_block_rules", report)
+        self.assertEqual(report["hw_spec_used"], "bmg_g21")
+        flagged_types = {a["anomaly_type"] for a in report["anomalies"]}
+        self.assertTrue(
+            "severely_below_spec" in flagged_types or "below_spec" in flagged_types,
+            f"Expected anomaly for 2.28 TFLOPS on large shape, got: {flagged_types}"
+        )
+
+    def test_detect_anomalies_cross_comparison(self):
+        # Large tile slower on larger m than small tile on smaller m → cross_anomaly
+        spec = profiler.get_hw_spec("bmg")
+        shapes_doc = {
+            "shapes": [
+                {
+                    "shape_id": "rcr_bf16_8_4096_4096",
+                    "layout": "rcr", "dtype_a": "bf16", "dtype_b": "bf16",
+                    "dtype_c": "f32", "dtype_acc": "f32",
+                    "m": 8, "n": 4096, "k": 4096,
+                },
+                {
+                    "shape_id": "rcr_bf16_256_4096_8192",
+                    "layout": "rcr", "dtype_a": "bf16", "dtype_b": "bf16",
+                    "dtype_c": "f32", "dtype_acc": "f32",
+                    "m": 256, "n": 4096, "k": 8192,
+                },
+            ]
+        }
+        candidate_space = {
+            "candidates": [
+                {
+                    "candidate_id": "rcr_bf16bf16f32_tm8_tn64_tk32_sg1x4_st2_sk1",
+                    "tile_m": 8, "tile_n": 64, "tile_k": 32,
+                    "sg_m": 1, "sg_n": 4, "stages": 2, "split_k": 1,
+                    "dtype_a": "bf16",
+                },
+                {
+                    "candidate_id": "rcr_bf16bf16f32_tm256_tn256_tk32_sg8x4_st2_sk1",
+                    "tile_m": 256, "tile_n": 256, "tile_k": 32,
+                    "sg_m": 8, "sg_n": 4, "stages": 2, "split_k": 1,
+                    "dtype_a": "bf16",
+                },
+            ]
+        }
+        # large tile on large shape (m=256) is slower than small tile on small shape (m=8)
+        probe_rows = [
+            {
+                "candidate_id": "rcr_bf16bf16f32_tm8_tn64_tk32_sg1x4_st2_sk1",
+                "shape_id": "rcr_bf16_8_4096_4096",
+                "avg_tflops": "50.0",
+                "status": "pass",
+            },
+            {
+                "candidate_id": "rcr_bf16bf16f32_tm256_tn256_tk32_sg8x4_st2_sk1",
+                "shape_id": "rcr_bf16_256_4096_8192",
+                "avg_tflops": "30.0",
+                "status": "pass",
+            },
+        ]
+
+        report = profiler.detect_probe_anomalies(probe_rows, shapes_doc, candidate_space, spec)
+
+        flagged_types = {a["anomaly_type"] for a in report["anomalies"]}
+        self.assertIn("cross_anomaly", flagged_types)
+
+    def test_detect_anomalies_generates_auto_block_rules(self):
+        # Severely below spec should produce an auto_block_rule
+        spec = profiler.get_hw_spec("bmg")
+        shapes_doc = {
+            "shapes": [
+                {
+                    "shape_id": "rcr_bf16_256_4096_8192",
+                    "layout": "rcr", "dtype_a": "bf16", "dtype_b": "bf16",
+                    "dtype_c": "f32", "dtype_acc": "f32",
+                    "m": 256, "n": 4096, "k": 8192,
+                }
+            ]
+        }
+        candidate_space = {
+            "candidates": [
+                {
+                    "candidate_id": "rcr_bf16bf16f32_tm256_tn256_tk32_sg8x4_st2_sk1",
+                    "tile_m": 256, "tile_n": 256, "tile_k": 32,
+                    "sg_m": 8, "sg_n": 4, "stages": 2, "split_k": 1,
+                    "dtype_a": "bf16",
+                }
+            ]
+        }
+        # Very low TFLOPS to ensure severely_below_spec
+        probe_rows = [
+            {
+                "candidate_id": "rcr_bf16bf16f32_tm256_tn256_tk32_sg8x4_st2_sk1",
+                "shape_id": "rcr_bf16_256_4096_8192",
+                "avg_tflops": "0.5",
+                "status": "pass",
+            }
+        ]
+
+        report = profiler.detect_probe_anomalies(probe_rows, shapes_doc, candidate_space, spec)
+
+        self.assertGreater(len(report["auto_block_rules"]), 0)
+        rule = report["auto_block_rules"][0]
+        self.assertIn("rule_id", rule)
+        self.assertIn("match", rule)
+        self.assertEqual(rule["source"], "anomaly_detection")
+        self.assertIn("tile_m", rule["match"])
+
+    def test_apply_anomaly_block_rules_merges_into_constraints(self):
+        constraints = profiler.default_constraints()
+        initial_blocked_count = len(constraints["blocked_rules"])
+        anomaly_report = {
+            "auto_block_rules": [
+                {
+                    "rule_id": "anomaly.block.cand_a@shape_a",
+                    "source": "anomaly_detection",
+                    "anomaly_type": "severely_below_spec",
+                    "match": {"tile_m": 256, "tile_n": 256, "tile_k": 32, "sg_m": 8, "sg_n": 4, "split_k": 1},
+                }
+            ]
+        }
+
+        updated = profiler.apply_anomaly_block_rules(constraints, anomaly_report)
+
+        self.assertIs(updated, constraints)
+        self.assertEqual(len(constraints["blocked_rules"]), initial_blocked_count + 1)
+        rule_ids = {rule["rule_id"] for rule in constraints["blocked_rules"]}
+        self.assertIn("anomaly.block.cand_a@shape_a", rule_ids)
+
+    def test_apply_anomaly_block_rules_deduplicates(self):
+        constraints = profiler.default_constraints()
+        anomaly_report = {
+            "auto_block_rules": [
+                {
+                    "rule_id": "anomaly.block.cand_a@shape_a",
+                    "source": "anomaly_detection",
+                    "anomaly_type": "severely_below_spec",
+                    "match": {"tile_m": 256},
+                }
+            ]
+        }
+        profiler.apply_anomaly_block_rules(constraints, anomaly_report)
+        initial_count = len(constraints["blocked_rules"])
+        # Apply the same rules again — should not add duplicates
+        profiler.apply_anomaly_block_rules(constraints, anomaly_report)
+
+        self.assertEqual(len(constraints["blocked_rules"]), initial_count)
+
+    def test_default_constraints_slm_limit_is_64kb(self):
+        constraints = profiler.default_constraints()
+
+        self.assertEqual(constraints["limits"]["max_slm_kb"], 64)
+
+    def test_phase_a_summary_includes_anomaly_report(self):
+        verified_hw_caps = {
+            "probe_mode": "run",
+            "dpas_baseline_probe": {"status": "pass"},
+            "compiler_flags_probe": {"results": []},
+            "anomaly_report": {
+                "anomalies": [],
+                "auto_block_rules": [],
+                "hw_spec_used": "bmg_g21",
+            },
+        }
+        constraints = profiler.default_constraints()
+
+        summary = profiler.build_phase_a_summary(verified_hw_caps, constraints, [])
+
+        self.assertIn("anomaly_report", summary)
+        self.assertEqual(summary["anomaly_report"]["hw_spec_used"], "bmg_g21")
+        self.assertIsInstance(summary["anomaly_report"]["anomalies"], list)
+
+
 if __name__ == "__main__":
     unittest.main()

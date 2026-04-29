@@ -26,12 +26,14 @@ if __package__ in (None, ""):
         generate_confirmation_entries,
     )
     from intel_gemm_profiler.constraints import (
+        apply_anomaly_block_rules,
         apply_probe_results_to_profiles,
         apply_run_probe_constraints,
         apply_static_probe_constraints,
         default_compiler_profiles,
         default_constraints,
     )
+    from intel_gemm_profiler.hw_specs import detect_probe_anomalies, get_hw_spec
     from intel_gemm_profiler.runner import collect_environment_metadata, run_entries_with_benchmark, run_entries_with_streamk_example
     from intel_gemm_profiler.selector import build_dispatch_table, build_phase_a_summary, build_phase_b_summary, build_run_summary, write_results_csv
     from intel_gemm_profiler.utils import ensure_dir, read_json, shell_init_with_env, shell_join, write_json
@@ -50,12 +52,14 @@ else:
         generate_confirmation_entries,
     )
     from .constraints import (
+        apply_anomaly_block_rules,
         apply_probe_results_to_profiles,
         apply_run_probe_constraints,
         apply_static_probe_constraints,
         default_compiler_profiles,
         default_constraints,
     )
+    from .hw_specs import detect_probe_anomalies, get_hw_spec
     from .runner import collect_environment_metadata, run_entries_with_benchmark, run_entries_with_streamk_example
     from .selector import build_dispatch_table, build_phase_a_summary, build_phase_b_summary, build_run_summary, write_results_csv
     from .utils import ensure_dir, read_json, shell_init_with_env, shell_join, write_json
@@ -136,6 +140,12 @@ def run_phase_a_probe(args, shapes_doc, base_constraints, profiles, reports_dir,
             probe_commands.append(shell_join(command))
         compiler_flags_probe = build_compiler_flags_probe_summary(compiler_probe_rows)
     constraints = apply_run_probe_constraints(static_constraints, probe_rows) if probe_rows else static_constraints
+    # --- Anomaly detection ---
+    hw_spec = get_hw_spec("bmg")
+    anomaly_report = detect_probe_anomalies(probe_rows, shapes_doc, static_candidate_space, hw_spec)
+    env_caps["anomaly_report"] = anomaly_report
+    apply_anomaly_block_rules(constraints, anomaly_report)
+    write_json(reports_dir / "anomaly_report.json", anomaly_report)
     env_caps["probe_mode"] = effective_probe_mode
     env_caps["constraint_source"] = constraints["constraint_source"]
     env_caps["dpas_baseline_probe"] = dpas_probe

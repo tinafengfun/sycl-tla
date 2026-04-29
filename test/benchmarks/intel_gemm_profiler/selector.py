@@ -91,6 +91,7 @@ def build_phase_a_summary(verified_hw_caps, constraints, probe_rows):
         "constraint_source": constraints["constraint_source"],
         "dpas_baseline_probe": verified_hw_caps.get("dpas_baseline_probe", {}),
         "compiler_flags_probe": verified_hw_caps.get("compiler_flags_probe", {}),
+        "anomaly_report": verified_hw_caps.get("anomaly_report", {}),
         "probe_results": len(probe_rows),
         "successful_probe_results": sum(1 for row in probe_rows if row["status"] == "pass"),
         "allowed_values": constraints["allowed_values"],

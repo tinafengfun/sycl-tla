@@ -16,7 +16,7 @@ def default_constraints():
         "generated_at": now_iso(),
         "constraint_source": "default_bmg",
         "device_arch": "bmg",
-        "limits": {"max_slm_kb": 128, "subgroup_size": 16, "max_split_k": 2, "max_stages": 3},
+        "limits": {"max_slm_kb": 64, "subgroup_size": 16, "max_split_k": 2, "max_stages": 3},
         "allowed_values": {
             "tile_m": [8, 16, 32, 64, 128, 256],
             "tile_n": [64, 128, 256],
@@ -113,6 +113,30 @@ def apply_run_probe_constraints(static_constraints, probe_rows):
         rule = blocked_rule_for_row(row)
         if rule["rule_id"] not in existing_ids:
             constraints["blocked_rules"].append(rule)
+            existing_ids.add(rule["rule_id"])
+    return constraints
+
+
+def apply_anomaly_block_rules(constraints, anomaly_report):
+    """Merge auto_block_rules from an anomaly report into *constraints*.
+
+    New rules from ``anomaly_report["auto_block_rules"]`` are appended to
+    ``constraints["blocked_rules"]``, de-duplicated by ``rule_id``.
+
+    Args:
+        constraints:   constraints dict (modified in place and returned).
+        anomaly_report: dict as returned by :func:`detect_probe_anomalies`.
+
+    Returns:
+        The updated *constraints* dict (same object).
+    """
+    new_rules = anomaly_report.get("auto_block_rules", [])
+    if not new_rules:
+        return constraints
+    existing_ids = {rule.get("rule_id") for rule in constraints.get("blocked_rules", [])}
+    for rule in new_rules:
+        if rule.get("rule_id") not in existing_ids:
+            constraints.setdefault("blocked_rules", []).append(rule)
             existing_ids.add(rule["rule_id"])
     return constraints
 

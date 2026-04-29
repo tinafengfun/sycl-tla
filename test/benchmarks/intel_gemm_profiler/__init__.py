@@ -15,6 +15,7 @@ from .catalog import (
     load_persisted_kernel_catalog,
 )
 from .constraints import (
+    apply_anomaly_block_rules,
     apply_probe_results_to_profiles,
     apply_run_probe_constraints,
     apply_static_probe_constraints,
@@ -22,6 +23,12 @@ from .constraints import (
     blocked_rule_for_row,
     default_compiler_profiles,
     default_constraints,
+)
+from .hw_specs import (
+    HW_REFERENCE_SPECS,
+    compute_efficiency_bounds,
+    detect_probe_anomalies,
+    get_hw_spec,
 )
 from .candidates import (
     build_candidate_build_manifest,
@@ -64,9 +71,11 @@ __all__ = [
     "BENCHMARK_ERROR_RE",
     "CSV_FIELDS",
     "DEFAULT_KERNEL_CATALOG_PATH",
+    "HW_REFERENCE_SPECS",
     "SCHEMA_VERSION",
     "SEARCH_RUNTIME_SCHEMA",
     "SEED_KERNELS",
+    "apply_anomaly_block_rules",
     "apply_probe_results_to_profiles",
     "apply_run_probe_constraints",
     "apply_static_probe_constraints",
@@ -87,14 +96,17 @@ __all__ = [
     "candidate_id_for",
     "choose_candidates_for_shape",
     "collect_environment_metadata",
+    "compute_efficiency_bounds",
     "default_compiler_profiles",
     "default_constraints",
     "default_shapes",
+    "detect_probe_anomalies",
     "dry_run_shapes",
     "ensure_dir",
     "generate_candidate_space",
     "generate_confirmation_entries",
     "generated_level0_kernel_catalog",
+    "get_hw_spec",
     "ilp_class",
     "kernel_catalog_entry",
     "load_persisted_kernel_catalog",

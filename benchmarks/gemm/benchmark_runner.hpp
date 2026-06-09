@@ -504,6 +504,7 @@ inline void cutlass_library_gemm_func(
 template <class GemmConfiguration>
 struct BenchmarkRunnerGemm {
   struct DirectRunResult {
+    bool success = false;
     double tflops = 0.0;
     double avg_runtime_ms = 0.0;
     double total_runtime_ms = 0.0;
@@ -1445,6 +1446,10 @@ private:
     auto to_ms = [](auto start, auto end) {
       return std::chrono::duration<double, std::milli>(end - start).count();
     };
+    auto direct_fail = [](char const* message) {
+      std::cerr << "[DIRECT_FAIL] " << message << std::endl;
+      return DirectRunResult{};
+    };
     bool enable_phase_timing = std::getenv("CUTLASS_BENCHMARK_PHASE_TIMING") != nullptr;
     auto total_begin = now();
 
@@ -1475,9 +1480,17 @@ private:
       }
     } else {
       size_t ws = Gemm::get_workspace_size(arguments);
-      try { workspace.reset(ws); } catch (...) { return {}; }
-      if (gemm_op.can_implement(arguments) != cutlass::Status::kSuccess) return {};
-      if (gemm_op.initialize(arguments, workspace.get()) != cutlass::Status::kSuccess) return {};
+      try {
+        workspace.reset(ws);
+      } catch (std::exception const& e) {
+        return direct_fail(e.what());
+      }
+      if (gemm_op.can_implement(arguments) != cutlass::Status::kSuccess) {
+        return direct_fail("GEMM unable to implement given args.");
+      }
+      if (gemm_op.initialize(arguments, workspace.get()) != cutlass::Status::kSuccess) {
+        return direct_fail("GEMM failed to initialize.");
+      }
     }
     auto setup_end = now();
 
@@ -1512,12 +1525,7 @@ private:
     compat::wait();
     auto warmup_end = now();
 
-    std::vector<double> runtimes;
-    runtimes.reserve(measure_iters);
     auto measure_submit_begin = now();
-    SyclEvent begin;
-    SyclEvent end;
-    syclEventRecord(begin);
     for (int i = 0; i < measure_iters; ++i) {
       if (prebuilt_variants) {
         prepared_variants[buffer_index_for_iteration(i + 1 + warmup_iters)].gemm_op.run();
@@ -1534,27 +1542,29 @@ private:
         gemm_op.run();
       }
     }
-    syclEventRecord(end);
     auto measure_submit_end = now();
     auto measure_collect_begin = now();
-    syclEventSynchronize(begin, end);
-    auto samples_ms = syclEventElapsedTimes(begin, end);
-    runtimes.assign(samples_ms.begin(), samples_ms.end());
+    compat::wait();
     auto measure_collect_end = now();
-    if (runtimes.empty()) {
-      return {};
+    if (measure_iters <= 0) {
+      return direct_fail("measure iteration count must be positive.");
     }
-    double total_ms = std::accumulate(runtimes.begin(), runtimes.end(), 0.0);
-    double avg_sec = (total_ms / measure_iters) * 1.0e-3;
+    double total_ms = to_ms(measure_submit_begin, measure_collect_end);
+    if (total_ms <= 0.0) {
+      return direct_fail("measured runtime was non-positive.");
+    }
+    double avg_runtime_ms = total_ms / static_cast<double>(measure_iters);
+    double avg_sec = avg_runtime_ms * 1.0e-3;
     DirectRunResult result;
     result.tflops = (2.0 * options.m * options.n * options.k * options.l * 1e-12) / avg_sec;
-    result.avg_runtime_ms = avg_sec * 1.0e3;
+    result.avg_runtime_ms = avg_runtime_ms;
     result.total_runtime_ms = total_ms;
     result.input_bytes_per_buffer = static_cast<double>(input_bytes_per_buffer);
     result.input_pool_target_bytes = static_cast<double>(kRandomInputPoolBytes);
     result.pool_buffers = count;
     result.warmup_iters = warmup_iters;
     result.measure_iters = measure_iters;
+    result.success = true;
     auto total_end = now();
     std::cerr << "[PERF] input_bytes_per_buffer=" << result.input_bytes_per_buffer << " pool_target_bytes=" << result.input_pool_target_bytes
               << " pool_buffers=" << result.pool_buffers << " warmup_iters=" << result.warmup_iters << " measure_iters=" << result.measure_iters
@@ -1566,8 +1576,8 @@ private:
                 << " warmup_ms=" << to_ms(warmup_begin, warmup_end)
                 << " measure_submit_ms=" << to_ms(measure_submit_begin, measure_submit_end)
                 << " measure_wait_collect_ms=" << to_ms(measure_collect_begin, measure_collect_end)
-                << " measured_device_ms=" << result.total_runtime_ms
-                << " measured_host_gap_ms=" << (to_ms(measure_submit_begin, measure_collect_end) - result.total_runtime_ms)
+                << " measured_total_ms=" << result.total_runtime_ms
+                << " measured_wait_ms=" << to_ms(measure_collect_begin, measure_collect_end)
                 << " total_wall_ms=" << to_ms(total_begin, total_end)
                 << std::endl;
     }

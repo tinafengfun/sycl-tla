@@ -36,8 +36,9 @@ int print_direct_result(std::string const& kernel, Result const& result) {{
             << " pool_buffers=" << result.pool_buffers
             << " measure_iters=" << result.measure_iters
             << " warmup_iters=" << result.warmup_iters
+            << " STATUS=" << (result.success ? "OK" : "FAIL")
             << std::endl;
-  return 0;
+  return result.success ? 0 : 2;
 }}
 
 int main(int argc, const char** argv) {{

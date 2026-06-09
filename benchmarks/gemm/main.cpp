@@ -26,8 +26,8 @@ int print_direct_result(std::string const& kernel, Result const& result) {
             << " warmup_iters=" << result.warmup_iters
             << " measure_iters=" << result.measure_iters
             << " KERNEL=" << kernel
-            << " STATUS=OK" << std::endl;
-  return 0;
+            << " STATUS=" << (result.success ? "OK" : "FAIL") << std::endl;
+  return result.success ? 0 : 2;
 }
 
 // ── Dual-mode profiler main ──

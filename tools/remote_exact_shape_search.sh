@@ -762,7 +762,7 @@ run_shape_worker() {
       total_runtime_ms=$(echo "$out" | grep -m1 -oP 'total_runtime_ms=\K[0-9.]+' || echo "")
       measure_iters=$(echo "$out" | grep -m1 -oP 'measure_iters=\K[0-9]+' || echo "")
       warmup_iters=$(echo "$out" | grep -m1 -oP 'warmup_iters=\K[0-9]+' || echo "")
-      status=$(echo "$out" | grep -oP 'STATUS=\K[A-Z]+' | head -1)
+      status=$(echo "$out" | grep -oP 'STATUS=\K[A-Z]+' | head -1 || true)
       if [ -n "$status" ]; then
         :
       elif echo "$out" | grep -q 'RESULT kernel='; then

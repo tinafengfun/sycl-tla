@@ -10,10 +10,10 @@ Intel GEMM Profiler is the repository's Python-side orchestration layer for Inte
 It works together with:
 
 - `test/benchmarks/intel_gemm_profiler.py`: compatibility CLI entrypoint
-- `test/benchmarks/intel_gemm_profiler/`: profiler package implementation
-- `tools/remote_exact_shape_search.sh`: remote exact-shape launcher
-- `tools/remote_exact_shape_search_ctl.py`: local remote-control wrapper
-- `tools/exact_shape_search_report.py`: exact-shape result merger and ranking generator
+- `tools/intel_gemm_profiler/`: profiler implementation, docs, and workflow modules
+- `tools/intel_gemm_profiler/remote_exact_shape_search.sh`: remote exact-shape launcher
+- `tools/intel_gemm_profiler/remote_exact_shape_search_ctl.py`: local remote-control wrapper
+- `tools/intel_gemm_profiler/exact_shape_search_report.py`: exact-shape result merger and ranking generator
 
 ## What it covers
 
@@ -112,15 +112,15 @@ when you want a narrow starting band rather than a fully validated general-purpo
 ```bash
 export EXACT_SHAPE_REMOTE_PASSWORD='***'
 
-python3 tools/remote_exact_shape_search_ctl.py --accept-new-host-key sync
-python3 tools/remote_exact_shape_search_ctl.py --accept-new-host-key launch \
+python3 tools/intel_gemm_profiler/remote_exact_shape_search_ctl.py --accept-new-host-key sync
+python3 tools/intel_gemm_profiler/remote_exact_shape_search_ctl.py --accept-new-host-key launch \
   --run-id shape_search_example \
   --shapes 8192x384x3584 \
   --layouts rcr,rrr \
   --kernel-catalog-source layered_bmg_scheduler_expanded \
   --batch-size 1 \
   --gpu-ids 0,1,2,3,4,5,6,7
-python3 tools/remote_exact_shape_search_ctl.py --accept-new-host-key status
+python3 tools/intel_gemm_profiler/remote_exact_shape_search_ctl.py --accept-new-host-key status
 ```
 
 If you need to resume the same run on a different GPU subset, relaunch with the same
@@ -131,7 +131,7 @@ across the current GPU set instead of staying pinned to the original launch layo
 ### 4. Generate exact-shape report
 
 ```bash
-python3 tools/remote_exact_shape_search_ctl.py --accept-new-host-key report \
+python3 tools/intel_gemm_profiler/remote_exact_shape_search_ctl.py --accept-new-host-key report \
   --run-dir /root/.../shape_search_example \
   --shape-tag 8192_384_3584
 ```
@@ -452,7 +452,7 @@ roughly:
 1. Regenerate the exact-shape report for a run:
 
 ```bash
-python3 tools/exact_shape_search_report.py \
+python3 tools/intel_gemm_profiler/exact_shape_search_report.py \
     --run-dir /root/.../screen_runs/shape_search_8192_76032_8192_sched_expanded_20260609_2015 \
     --shape-tag 8192_76032_8192
 ```

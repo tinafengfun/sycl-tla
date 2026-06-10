@@ -10,13 +10,14 @@ import sys
 from pathlib import Path
 
 
-PACKAGE_DIR = Path(__file__).with_name("intel_gemm_profiler")
+PACKAGE_DIR = Path(__file__).resolve().parents[2] / "tools" / "intel_gemm_profiler"
 # This shim is loaded by file path from tests and wrapper scripts. A plain
 # `from intel_gemm_profiler import *` would require the package directory to
 # already be on sys.path, so we bootstrap the package explicitly here.
+PACKAGE_INIT = PACKAGE_DIR / "__init__.py"
 SPEC = importlib.util.spec_from_file_location(
     "_intel_gemm_profiler_pkg",
-    PACKAGE_DIR / "__init__.py",
+    PACKAGE_INIT,
     submodule_search_locations=[str(PACKAGE_DIR)],
 )
 MODULE = importlib.util.module_from_spec(SPEC)

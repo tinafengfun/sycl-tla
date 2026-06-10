@@ -19,8 +19,8 @@ from .source_templates import is_valid_xe2_tile_sg
 from .utils import now_iso, read_json
 
 
-DEFAULT_KERNEL_CATALOG_PATH = Path(__file__).resolve().parents[1] / "intel_gemm_kernel_catalog_level0.json"
-BENCHMARK_GEMM_DIR = Path(__file__).resolve().parents[3] / "benchmarks" / "gemm"
+DEFAULT_KERNEL_CATALOG_PATH = Path(__file__).resolve().parent / "intel_gemm_kernel_catalog_level0.json"
+BENCHMARK_GEMM_DIR = Path(__file__).resolve().parents[2] / "benchmarks" / "gemm"
 STREAMK_TILE_DEF_RE = re.compile(r"BMG_STREAMK_TILE\((\d+),\s*(\d+),\s*(\d+)\)")
 STREAMK_SEED_TILE_DEF_PATH = BENCHMARK_GEMM_DIR / "bmg_streamk_seed_tile.def"
 STREAMK_EXPANDED_TILE_DEF_PATH = BENCHMARK_GEMM_DIR / "bmg_streamk_expanded_tile.def"
@@ -953,7 +953,7 @@ def _import_cutlass_generator_modules():
         from cutlass_library.library import DataTypeNames, LayoutType, TileSchedulerType
         from cutlass_library.manifest import Manifest, Options
     except ImportError:
-        python_root = Path(__file__).resolve().parents[3] / "python"
+        python_root = Path(__file__).resolve().parents[2] / "python"
         if str(python_root) not in sys.path:
             sys.path.insert(0, str(python_root))
         from cutlass_library.generator import GenerateIntelXe

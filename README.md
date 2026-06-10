@@ -90,8 +90,8 @@ This is useful when you want to:
 
 See:
 
-- `test/benchmarks/intel_gemm_profiler/README.md`
-- `test/benchmarks/intel_gemm_profiler/OPERATION_MANUAL.md`
+- `tools/intel_gemm_profiler/README.md`
+- `tools/intel_gemm_profiler/OPERATION_MANUAL.md`
 
 # CuTe
 

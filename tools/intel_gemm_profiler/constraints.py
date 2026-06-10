@@ -11,8 +11,8 @@ from .schemas import SCHEMA_VERSION
 from .utils import now_iso, read_json
 
 
-DEFAULT_BUILD_CONFIG_PATH = Path(__file__).resolve().parent.parent / "build_config_bmg_perf.json"
-DEFAULT_RUNTIME_CONFIG_PATH = Path(__file__).resolve().parent.parent / "runtime_config_bmg_perf.json"
+DEFAULT_BUILD_CONFIG_PATH = Path(__file__).resolve().parent / "build_config_bmg_perf.json"
+DEFAULT_RUNTIME_CONFIG_PATH = Path(__file__).resolve().parent / "runtime_config_bmg_perf.json"
 
 
 def _default_build_config():

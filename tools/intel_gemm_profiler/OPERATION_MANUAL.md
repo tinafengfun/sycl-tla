@@ -31,7 +31,7 @@ Use this manual when you need to:
    - use `--batch-size 1`
 
 4. **Remote scheduler-expanded runs must keep root-repo sync and worker-repo sync consistent.**
-   - use `tools/remote_exact_shape_search_ctl.py sync`
+   - use `tools/intel_gemm_profiler/remote_exact_shape_search_ctl.py sync`
    - do not hand-edit a remote worker repo
 
 5. **For old exact-shape runs, latency in the report can be derived rather than natively recorded.**
@@ -318,7 +318,7 @@ Healthy output for the current sample should look like:
 ```bash
 cd sycl-tla
 export EXACT_SHAPE_REMOTE_PASSWORD='***'
-python3 tools/remote_exact_shape_search_ctl.py --accept-new-host-key sync
+python3 tools/intel_gemm_profiler/remote_exact_shape_search_ctl.py --accept-new-host-key sync
 ```
 
 ### 4.2 Launch
@@ -326,7 +326,7 @@ python3 tools/remote_exact_shape_search_ctl.py --accept-new-host-key sync
 Example for the scheduler-expanded exact shape:
 
 ```bash
-python3 tools/remote_exact_shape_search_ctl.py --accept-new-host-key launch \
+python3 tools/intel_gemm_profiler/remote_exact_shape_search_ctl.py --accept-new-host-key launch \
   --run-id shape_search_8192_384_3584_sched_expanded \
   --shapes 8192x384x3584 \
   --layouts rcr,rrr \
@@ -338,7 +338,7 @@ python3 tools/remote_exact_shape_search_ctl.py --accept-new-host-key launch \
 ### 4.3 Monitor
 
 ```bash
-python3 tools/remote_exact_shape_search_ctl.py --accept-new-host-key status \
+python3 tools/intel_gemm_profiler/remote_exact_shape_search_ctl.py --accept-new-host-key status \
   --run-dir /root/cutlass_profile_device7_b70_2500mhz/screen_runs/shape_search_8192_384_3584_sched_expanded
 ```
 
@@ -351,7 +351,7 @@ Check:
 ### 4.4 Stop
 
 ```bash
-python3 tools/remote_exact_shape_search_ctl.py --accept-new-host-key stop \
+python3 tools/intel_gemm_profiler/remote_exact_shape_search_ctl.py --accept-new-host-key stop \
   --run-dir /root/cutlass_profile_device7_b70_2500mhz/screen_runs/shape_search_8192_384_3584_sched_expanded
 ```
 
@@ -361,7 +361,7 @@ To keep the same run directory and completed CSVs but continue on a smaller or d
 subset, relaunch with the original `--run-id` and add `--resume-run`:
 
 ```bash
-python3 tools/remote_exact_shape_search_ctl.py --accept-new-host-key launch \
+python3 tools/intel_gemm_profiler/remote_exact_shape_search_ctl.py --accept-new-host-key launch \
   --run-id shape_search_8192_384_3584_sched_expanded \
   --shapes 8192x384x3584 \
   --layouts rcr,rrr \
@@ -384,7 +384,7 @@ Behavior note:
 ### 5.1 Generate report
 
 ```bash
-python3 tools/remote_exact_shape_search_ctl.py --accept-new-host-key report \
+python3 tools/intel_gemm_profiler/remote_exact_shape_search_ctl.py --accept-new-host-key report \
   --run-dir /root/cutlass_profile_device7_b70_2500mhz/screen_runs/shape_search_8192_384_3584_sched_expanded_20260606_2200 \
   --shape-tag 8192_384_3584
 ```
@@ -449,7 +449,7 @@ top exact-shape results and carry that source into a separate rebuild or migrati
 Typical usage:
 
 ```bash
-python3 tools/exact_shape_search_report.py \
+python3 tools/intel_gemm_profiler/exact_shape_search_report.py \
   --run-dir /root/.../screen_runs/shape_search_8192_76032_8192_sched_expanded_20260609_2015 \
   --shape-tag 8192_76032_8192
 

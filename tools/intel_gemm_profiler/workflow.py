@@ -3,14 +3,12 @@
 # SPDX-License-Identifier: BSD-3-Clause
 #################################################################################################
 
-import argparse
 import copy
 import csv
 import hashlib
 import json
 import os
 import shutil
-import statistics
 import sys
 from pathlib import Path
 
@@ -39,13 +37,18 @@ if __package__ in (None, ""):
         selected_compile_env,
         selected_runtime_env,
     )
-    from intel_gemm_profiler.hw_specs import detect_probe_anomalies, resolve_hw_reference_spec
-    from intel_gemm_profiler.source_templates import is_valid_xe2_tile_sg
     from intel_gemm_profiler.ali_dataset import build_ali_gemm_docs
     from intel_gemm_profiler.dispatch import DISPATCH_KEY_FIELDS, load_dispatch_table, lookup_dispatch_entry
     from intel_gemm_profiler.device_target import resolve_profiles_device_target
+    from intel_gemm_profiler.hw_specs import resolve_hw_reference_spec
+    from intel_gemm_profiler.phase_a import (
+        build_compiler_flags_probe_summary,
+        empty_anomaly_report,
+        run_phase_a_probe,
+    )
     from intel_gemm_profiler.runner import collect_environment_metadata, run_benchmark, run_entries_with_benchmark, run_entries_with_streamk_example
     from intel_gemm_profiler.selector import build_candidate_coverage_report, build_dispatch_table, build_phase_a_summary, build_phase_b_summary, build_reference_comparison, build_run_summary, write_results_csv
+    from intel_gemm_profiler.source_templates import is_valid_xe2_tile_sg
     from intel_gemm_profiler.utils import ensure_dir, now_iso, read_json, resolve_executable, shell_init_with_env, shell_join, write_json
     from intel_gemm_profiler.schemas import SCHEMA_VERSION, SEARCH_RUNTIME_SCHEMA
 else:
@@ -70,82 +73,20 @@ else:
         selected_compile_env,
         selected_runtime_env,
     )
-    from .hw_specs import detect_probe_anomalies, resolve_hw_reference_spec
-    from .source_templates import is_valid_xe2_tile_sg
     from .ali_dataset import build_ali_gemm_docs
     from .dispatch import DISPATCH_KEY_FIELDS, load_dispatch_table, lookup_dispatch_entry
     from .device_target import resolve_profiles_device_target
+    from .hw_specs import resolve_hw_reference_spec
+    from .phase_a import (
+        build_compiler_flags_probe_summary,
+        empty_anomaly_report,
+        run_phase_a_probe,
+    )
     from .runner import collect_environment_metadata, run_benchmark, run_entries_with_benchmark, run_entries_with_streamk_example
     from .selector import build_candidate_coverage_report, build_dispatch_table, build_phase_a_summary, build_phase_b_summary, build_reference_comparison, build_run_summary, write_results_csv
+    from .source_templates import is_valid_xe2_tile_sg
     from .utils import ensure_dir, now_iso, read_json, resolve_executable, shell_init_with_env, shell_join, write_json
     from .schemas import SCHEMA_VERSION, SEARCH_RUNTIME_SCHEMA
-
-
-def build_compiler_flags_probe_summary(rows, profiles=None):
-    profile_class_map = {
-        profile["compiler_profile_id"]: profile.get("candidate_class", "")
-        for profile in (profiles or {}).get("profiles", [])
-    }
-    by_profile = {}
-    for row in rows:
-        profile_id = row["compiler_profile_id"]
-        by_profile.setdefault(profile_id, []).append(
-            {
-                "compiler_profile_id": profile_id,
-                "candidate_class": row.get("candidate_class", profile_class_map.get(profile_id, "")),
-                "status": row["status"],
-                "avg_tflops": row["avg_tflops"],
-                "avg_runtime_ms": row["avg_runtime_ms"],
-                "candidate_id": row["candidate_id"],
-                "shape_id": row["shape_id"],
-                "log": row["stdout_log"],
-            }
-        )
-    summarized = []
-    for profile_id, items in by_profile.items():
-        passed = [item for item in items if item["status"] == "pass"]
-        best_pass = max(passed, key=lambda item: float(item["avg_tflops"] or 0.0), default=None)
-        status = "pass" if passed else items[0]["status"]
-        avg_tflops = ""
-        avg_runtime_ms = ""
-        if passed:
-            tflops_values = [float(item["avg_tflops"]) for item in passed if item["avg_tflops"] != ""]
-            runtime_values = [float(item["avg_runtime_ms"]) for item in passed if item["avg_runtime_ms"] != ""]
-            avg_tflops = str(statistics.median(tflops_values)) if tflops_values else ""
-            avg_runtime_ms = str(statistics.median(runtime_values)) if runtime_values else ""
-        reference = best_pass or items[0]
-        summarized.append(
-            {
-                "compiler_profile_id": profile_id,
-                "candidate_class": reference["candidate_class"],
-                "status": status,
-                "avg_tflops": avg_tflops,
-                "avg_runtime_ms": avg_runtime_ms,
-                "candidate_id": reference["candidate_id"],
-                "shape_id": reference["shape_id"],
-                "log": reference["log"],
-                "samples": len(items),
-            }
-        )
-    grouped = {}
-    for item in summarized:
-        grouped.setdefault(item["candidate_class"], []).append(item)
-    selected = {}
-    for candidate_class, items in grouped.items():
-        passed = [item for item in items if item["status"] == "pass"]
-        if passed:
-            selected[candidate_class] = max(passed, key=lambda item: float(item["avg_tflops"] or 0.0))["compiler_profile_id"]
-    return {"results": summarized, "selected_profile_ids": selected}
-
-
-def empty_anomaly_report(hw_spec):
-    return {
-        "hw_spec": hw_spec["device_id"],
-        "hw_spec_calibration_status": hw_spec.get("calibration_status", "unknown"),
-        "peak_tflops": hw_spec.get("peak_xmx_tflops", 0.0),
-        "anomalies": [],
-        "auto_block_rules": [],
-    }
 
 
 def load_compiled_kernel_list(path):
@@ -1058,79 +999,6 @@ def limit_shapes_and_reference(shapes_doc, reference_doc=None, max_shapes=0):
     return limited_shapes_doc, limited_reference_doc
 
 
-def run_phase_a_probe(args, shapes_doc, base_constraints, profiles, reports_dir, configs_dir, manifests_dir, logs_dir):
-    base_runtime_shell_init = shell_init_with_env(args.shell_init, selected_runtime_env(profiles, variant_override=getattr(args, "runtime_variant", None) or None))
-    compile_shell_init = shell_init_with_env(args.shell_init, selected_compile_env(profiles, variant_override=getattr(args, "compile_variant", None) or None))
-    env_caps = collect_environment_metadata(args.shell_init, args.benchmark_exe, args.streamk_example_exe, cwd=args.cwd)
-    static_constraints = apply_static_probe_constraints(base_constraints, env_caps)
-    hw_spec = resolve_hw_reference_spec(
-        static_constraints["device_arch"],
-        getattr(args, "hw_spec_id", "") or profiles.get("device_target_detection", {}).get("resolved_hw_spec_id", ""),
-    )
-    allowed_runners = ("benchmark", "streamk_example") if env_caps["executables"].get("streamk_example_available") else ("benchmark",)
-    static_candidate_space = generate_candidate_space(shapes_doc, static_constraints, profiles, allowed_runners=allowed_runners, prefilter_strategy=getattr(args, "prefilter", "none"))
-    probe_rows = []
-    probe_logs = []
-    probe_commands = []
-    probe_entries = build_phase_a_probe_entries(shapes_doc, static_candidate_space)
-    effective_probe_mode = args.probe_mode
-    if effective_probe_mode == "auto":
-        effective_probe_mode = "static" if args.skip_run else "run"
-    if effective_probe_mode == "run" and not args.skip_run and probe_entries:
-        probe_benchmark_entries = [entry for entry in probe_entries if entry["candidate"].get("runner", "benchmark") == "benchmark"]
-        probe_streamk_entries = [entry for entry in probe_entries if entry["candidate"].get("runner") == "streamk_example"]
-        if probe_benchmark_entries:
-            probe_log = logs_dir / "probe.log"
-            rows, command = run_entries_with_benchmark(probe_benchmark_entries, configs_dir / "probe.in", manifests_dir / "probe_manifest.json", probe_log, args.benchmark_exe, cwd=args.cwd, shell_init=base_runtime_shell_init, timeout=args.timeout)
-            probe_rows.extend(rows)
-            probe_logs.append(str(probe_log))
-            probe_commands.append(shell_join(command))
-        if probe_streamk_entries:
-            rows, commands = run_entries_with_streamk_example(probe_streamk_entries, logs_dir, args.streamk_example_exe, cwd=args.cwd, shell_init=base_runtime_shell_init, timeout=args.timeout)
-            probe_rows.extend(rows)
-            probe_logs.extend(str(logs_dir / f"{entry['bm_name']}.log") for entry in probe_streamk_entries)
-            probe_commands.extend(commands)
-    dpas_probe = {"status": "skipped", "reason": "probe mode disabled or benchmark unavailable"}
-    compiler_flags_probe = {"results": [], "selected_profile_ids": {}}
-    if effective_probe_mode == "run" and not args.skip_run and env_caps["executables"]["benchmark_available"]:
-        dpas_entry = build_dpas_probe_entry(shapes_doc, static_candidate_space)
-        if dpas_entry:
-            dpas_log = logs_dir / "dpas_probe.log"
-            rows, command = run_entries_with_benchmark([dpas_entry], configs_dir / "dpas_probe.in", manifests_dir / "dpas_probe_manifest.json", dpas_log, args.benchmark_exe, cwd=args.cwd, shell_init=base_runtime_shell_init, timeout=args.timeout)
-            if rows:
-                probe_rows.extend(rows)
-                probe_logs.append(str(dpas_log))
-                probe_commands.append(shell_join(command))
-                row = rows[0]
-                dpas_probe = {"status": row["status"], "candidate_id": row["candidate_id"], "shape_id": row["shape_id"], "avg_tflops": row["avg_tflops"], "avg_runtime_ms": row["avg_runtime_ms"], "log": str(dpas_log)}
-            else:
-                dpas_probe = {"status": "fail", "reason": "missing benchmark row", "log": str(dpas_log)}
-        compiler_probe_entries = build_compiler_profile_probe_entries(shapes_doc, static_candidate_space, profiles)
-        compiler_probe_rows = []
-        for entry in compiler_probe_entries:
-            profile = next(profile for profile in profiles["profiles"] if profile["compiler_profile_id"] == entry["compiler_profile_probe_id"])
-            compiler_log = logs_dir / f"{entry['compiler_profile_probe_id'].replace('.', '_')}.log"
-            runtime_shell_init = shell_init_with_env(args.shell_init, selected_runtime_env(profiles, profile))
-            rows, command = run_entries_with_benchmark([entry], configs_dir / f"{entry['compiler_profile_probe_id'].replace('.', '_')}.in", manifests_dir / f"{entry['compiler_profile_probe_id'].replace('.', '_')}_manifest.json", compiler_log, args.benchmark_exe, cwd=args.cwd, shell_init=runtime_shell_init, timeout=args.timeout)
-            compiler_probe_rows.extend(rows)
-            probe_logs.append(str(compiler_log))
-            probe_commands.append(shell_join(command))
-        compiler_flags_probe = build_compiler_flags_probe_summary(compiler_probe_rows, profiles)
-    anomaly_report = detect_probe_anomalies(probe_rows, shapes_doc, static_candidate_space, hw_spec) if probe_rows else empty_anomaly_report(hw_spec)
-    constraints = apply_run_probe_constraints(static_constraints, probe_rows, anomaly_report=anomaly_report) if probe_rows else static_constraints
-    env_caps["probe_mode"] = effective_probe_mode
-    env_caps["hw_reference_spec_id"] = hw_spec["device_id"]
-    env_caps["hw_reference_spec"] = hw_spec
-    env_caps["constraint_source"] = constraints["constraint_source"]
-    env_caps["dpas_baseline_probe"] = dpas_probe
-    env_caps["compiler_flags_probe"] = compiler_flags_probe
-    env_caps["anomaly_report"] = anomaly_report
-    env_caps["probe_results"] = [{"candidate_id": row["candidate_id"], "shape_id": row["shape_id"], "status": row["status"], "avg_tflops": row["avg_tflops"], "split_k": row["split_k"]} for row in probe_rows]
-    verified_hw_caps_path = reports_dir / "verified_hw_caps.json"
-    write_json(verified_hw_caps_path, env_caps)
-    return constraints, env_caps, verified_hw_caps_path, probe_rows, probe_logs, probe_commands
-
-
 def benchmark_command_strings(command_or_commands):
     if not command_or_commands:
         return []
@@ -1767,122 +1635,30 @@ def workflow(args):
 
 
 def build_parser():
-    parser = argparse.ArgumentParser(description="Intel GEMM profiler MVP runner for non-legacy registered RCR kernels.")
-    parser.add_argument("--workspace", default="", help="Workspace directory for generated files and reports.")
-    parser.add_argument("--benchmark-exe", default="./build/benchmarks/gemm/cutlass_benchmarks_gemm_sycl", help="Benchmark executable to run.")
-    parser.add_argument("--streamk-example-exe", default="./build/examples/03_bmg_gemm_streamk/03_bmg_gemm_streamk", help="StreamK example executable used for split-k candidates.")
-    parser.add_argument("--cwd", default=None, help="Working directory for the benchmark subprocess.")
-    parser.add_argument("--shell-init", default="", help="Optional shell snippet executed before the benchmark command, e.g. 'source /home/intel/.bashrc && source /opt/intel/oneapi/setvars.sh'.")
-    parser.add_argument("--dtype", choices=sorted(SEED_KERNELS.keys()), default="bf16", help="Default dtype preset.")
-    parser.add_argument("--probe-mode", choices=["auto", "off", "static", "run"], default="auto", help="Phase A constraint probe mode. 'auto' runs representative probes unless --skip-run is set.")
-    parser.add_argument("--shapes-json", default="", help="Optional path to gemm_target_shapes.json.")
-    parser.add_argument("--reference-json", default="", help="Optional path to reference/oracle JSON for dataset comparison.")
-    parser.add_argument("--ali-workbook", default="", help="Optional Ali GEMM performance workbook. When set, workflow derives gemm_target_shapes.json and reference comparison input from the workbook.")
-    parser.add_argument("--max-shapes", type=int, default=0, help="Limit target shapes to the first N entries after loading --shapes-json, --ali-workbook, or the default shape set. 0 disables the limit.")
-    parser.add_argument("--constraints-json", default="", help="Optional path to safe_search_constraints.json.")
-    parser.add_argument("--compiler-profiles-json", default="", help="Optional path to compiler_profiles.json.")
-    parser.add_argument("--compile-variant", default="", help="Override the selected compile env variant (e.g., perf_default, perf_perfmodel, debug_with_lines). Uses the variant from build_config_bmg_perf.json when empty.")
-    parser.add_argument("--runtime-variant", default="", help="Override the selected runtime env variant (e.g., default, ze_affinity_7). Uses the variant from runtime_config_bmg_perf.json when empty.")
-    parser.add_argument("--update-compile-variant", default="", help="Persist a new compile variant selection to build_config_bmg_perf.json. Use --list-compile-variants to see available options.")
-    parser.add_argument("--update-runtime-variant", default="", help="Persist a new runtime variant selection to runtime_config_bmg_perf.json. Use --list-runtime-variants to see available options.")
-    parser.add_argument("--list-compile-variants", action="store_true", help="List available compile env variants and exit.")
-    parser.add_argument("--list-runtime-variants", action="store_true", help="List available runtime env variants and exit.")
-    parser.add_argument("--kernel-catalog-source", choices=["persisted", "generator", "expanded_streamk", "expanded_bmg", "layered_bmg", "layered_bmg_scheduler_expanded"], default="persisted", help="Catalog source for Phase B candidates. 'expanded_bmg' enables the opt-in BMG Gemm/StreamK/DataParallel/SplitK tile expansion and requires rebuilding the benchmark with the generated build plan. 'layered_bmg' adds regular GEMM legal tile/subgroup/stage enumeration on top of expanded_bmg while preserving the legacy fixed-8x4 scheduler path. 'layered_bmg_scheduler_expanded' keeps the same regular GEMM space but widens BF16 scheduler search across legal subgroup/stage combinations. 'expanded_streamk' is kept as a compatibility alias.")
-    parser.add_argument("--kernel-catalog-path", default="", help="Optional path to a persisted kernel catalog JSON. Used when --kernel-catalog-source=persisted.")
-    parser.add_argument("--search-strategy", choices=["manual", "baseline", "expanded_bmg", "layered_exhaustive", "bruteforce_scheduler"], default="manual", help="High-level search preset. 'manual' preserves explicit catalog/build flags. 'baseline' keeps the legacy persisted baseline search. 'expanded_bmg' keeps the legacy expanded BMG search. 'layered_exhaustive' keeps the legacy layered exhaustive search. 'bruteforce_scheduler' widens BF16 scheduler search across legal subgroup/stage combinations and routes Phase B through scheduler-focused preflight batches.")
-    parser.add_argument("--bruteforce-scheduler-search", action="store_true", help="Enable the no-pruning scheduler search profile: force layered_bmg_scheduler_expanded, disable prefiltering, emit per-kernel preflight build batches, and route Phase B benchmark runs through the preflight executables.")
-    parser.add_argument("--prefilter", choices=["none", "light", "medium", "aggressive"], default="none", help="Candidate prefilter strategy: skip configs unlikely to perform well for the target shapes. 'light' removes physically incompatible configs. 'medium' adds ILP-based pruning. 'aggressive' is for fastest search with some risk of missing optimal configs.")
-    parser.add_argument("--compiled-kernel-list", default="", help="Optional newline-delimited compiled kernel list or regex filter file. When set, Phase B only runs benchmark candidates present in this list.")
-    parser.add_argument("--cmake-source-dir", default="", help="Optional source directory used in the generated candidate benchmark CMake build plan. Defaults to --cwd or the current directory.")
-    parser.add_argument("--benchmark-build-dir", default="", help="Optional build directory used in the generated candidate benchmark CMake build plan. Defaults to <workspace>/build/candidate_benchmarks.")
-    parser.add_argument("--googlebenchmark-dir", default="", help="Optional local Google Benchmark source directory injected into the generated CMake build plan as GOOGLEBENCHMARK_DIR to avoid FetchContent downloads.")
-    parser.add_argument("--googlebenchmark-build-dir", default="", help="Optional prebuilt Google Benchmark build directory injected into the generated CMake build plan as GOOGLEBENCHMARK_BUILD_DIR when isolated workspaces cannot reuse the default build-tree _deps path.")
-    parser.add_argument("--cmake-cxx-compiler", default="", help="Optional CMAKE_CXX_COMPILER value injected into the generated candidate benchmark CMake build plan, e.g. 'icpx' for oneAPI SYCL builds.")
-    parser.add_argument("--build-candidate-benchmark", action="store_true", help="Execute the generated candidate benchmark CMake configure/build plan before Phase B runs, then use the built benchmark executable for screening and confirmation.")
-    parser.add_argument("--candidate-build-batch-size", type=int, default=0, help="Emit additional selected-kernel filter files in batches of N kernels for isolated generated benchmark build preflight/retry. 0 disables batch artifacts.")
-    parser.add_argument("--run-candidate-build-preflight", action="store_true", help="Execute per-batch candidate benchmark preflight build plans before the aggregate candidate benchmark build. Requires --candidate-build-batch-size to produce batch plans.")
-    parser.add_argument("--use-candidate-build-preflight-benchmarks", action="store_true", help="Route benchmark screening and confirmation entries to per-batch benchmark executables produced by --run-candidate-build-preflight instead of the aggregate benchmark executable.")
-    parser.add_argument("--resume-candidate-build-preflight", action="store_true", help="Resume a previous preflight build: skip batches whose log shows successful completion. Uses preflight_progress.json in the reports directory.")
-    parser.add_argument("--candidate-build-parallelism", type=int, default=16, help="Number of concurrent batch compilations during preflight. Each batch build uses an auto-sized subset of host CPUs to avoid oversubscribing the machine. 1 runs preflight sequentially.")
-    parser.add_argument("--generator-arch", choices=["bmg", "pvc"], default="bmg", help="Intel Xe generator arch used when --kernel-catalog-source=generator.")
-    parser.add_argument("--generator-instantiation-level", type=int, default=0, help="Intel Xe generator instantiation level used when --kernel-catalog-source=generator.")
-    parser.add_argument("--hw-spec-id", default="", help="Optional hardware reference spec id override, e.g. 'bmg_g21'.")
-    parser.add_argument("--skip-run", action="store_true", help="Only emit generated artifacts without invoking the benchmark.")
-    parser.add_argument("--dry-run", action="store_true", help="Run a minimal benchmark-backed screening smoke with a tiny shape set and no confirmation.")
-    parser.add_argument("--timeout", type=int, default=600, help="Per-subprocess timeout in seconds for benchmark and example runtime execution.")
-    parser.add_argument("--build-timeout", type=int, default=0, help="Optional per-subprocess timeout in seconds for candidate benchmark configure/build steps. 0 reuses --timeout.")
-    parser.add_argument("--benchmark-entry-chunk-size", type=int, default=0, help="Split screening and confirmation benchmark config execution into chunks of N entries. 0 runs each stage as one subprocess.")
-    parser.add_argument("--top-k", type=int, default=3, help="Top-k candidates kept for confirmation.")
-    parser.add_argument("--confirm-runs", type=int, default=3, help="Number of confirmation attempts for top-k candidates.")
-    parser.add_argument("--close-call-threshold", type=float, default=3.0, help="Gap threshold in percent for close-call labeling.")
-    parser.add_argument("--lookup-dispatch-table", default="", help="Lookup mode: path to gemm_dispatch_table.json or optimal_dispatch_table.json. When set, the CLI prints a lookup JSON result instead of running the profiler workflow.")
-    parser.add_argument("--validate-product-bundle", default="", help="Validation mode: path to gemm_product_bundle_manifest.json. Prints JSON suitable for release/CI gates and exits nonzero on failure.")
-    parser.add_argument("--export-product-bundle", default="", help="Export mode: path to gemm_product_bundle_manifest.json to copy into a standalone product handoff directory.")
-    parser.add_argument("--bundle-output-dir", default="", help="Export mode output directory for --export-product-bundle.")
-    parser.add_argument("--lookup-layout", default="rcr", help="Lookup mode GEMM layout key, e.g. rcr.")
-    parser.add_argument("--lookup-dtype-a", default="bf16", help="Lookup mode A dtype.")
-    parser.add_argument("--lookup-dtype-b", default="bf16", help="Lookup mode B dtype.")
-    parser.add_argument("--lookup-dtype-c", default="f32", help="Lookup mode C dtype.")
-    parser.add_argument("--lookup-dtype-d", default="", help="Lookup mode D/output dtype. Defaults to --lookup-dtype-c.")
-    parser.add_argument("--lookup-dtype-acc", default="f32", help="Lookup mode accumulator dtype.")
-    parser.add_argument("--lookup-m", type=int, default=0, help="Lookup mode M dimension.")
-    parser.add_argument("--lookup-n", type=int, default=0, help="Lookup mode N dimension.")
-    parser.add_argument("--lookup-k", type=int, default=0, help="Lookup mode K dimension.")
-    parser.add_argument("--lookup-batch-count", type=int, default=1, help="Lookup mode batch/L dimension.")
-    parser.add_argument("--fallback-candidate-id", default="", help="Optional fallback candidate id returned when lookup mode misses the exact shape.")
-    return parser
+    if __package__ in (None, ""):
+        from intel_gemm_profiler.cli import build_parser as _build_parser
+    else:
+        from .cli import build_parser as _build_parser
+
+    return _build_parser()
 
 
 def dispatch_lookup_from_args(args):
-    missing = [
-        flag
-        for flag, value in (
-            ("--lookup-m", args.lookup_m),
-            ("--lookup-n", args.lookup_n),
-            ("--lookup-k", args.lookup_k),
-            ("--lookup-batch-count", args.lookup_batch_count),
-        )
-        if value <= 0
-    ]
-    if missing:
-        raise ValueError(f"{', '.join(missing)} must be positive when --lookup-dispatch-table is used.")
-    shape = {
-        "layout": args.lookup_layout,
-        "dtype_a": args.lookup_dtype_a,
-        "dtype_b": args.lookup_dtype_b,
-        "dtype_c": args.lookup_dtype_c,
-        "dtype_d": args.lookup_dtype_d or args.lookup_dtype_c,
-        "dtype_acc": args.lookup_dtype_acc,
-        "m": args.lookup_m,
-        "n": args.lookup_n,
-        "k": args.lookup_k,
-        "batch_count": args.lookup_batch_count,
-    }
-    return lookup_dispatch_entry(
-        args.lookup_dispatch_table,
-        shape,
-        fallback_candidate_id=args.fallback_candidate_id,
-    )
+    if __package__ in (None, ""):
+        from intel_gemm_profiler.cli import dispatch_lookup_from_args as _dispatch_lookup_from_args
+    else:
+        from .cli import dispatch_lookup_from_args as _dispatch_lookup_from_args
+
+    return _dispatch_lookup_from_args(args)
 
 
 def main():
-    args = build_parser().parse_args()
-    selected_modes = sum(bool(value) for value in (args.lookup_dispatch_table, args.validate_product_bundle, args.export_product_bundle))
-    if selected_modes > 1:
-        raise ValueError("--lookup-dispatch-table, --validate-product-bundle, and --export-product-bundle are mutually exclusive.")
-    if args.export_product_bundle:
-        if not args.bundle_output_dir:
-            raise ValueError("--bundle-output-dir is required with --export-product-bundle.")
-        result = export_product_bundle_manifest(args.export_product_bundle, args.bundle_output_dir)
-    elif args.validate_product_bundle:
-        result = validate_product_bundle_manifest(args.validate_product_bundle)
-    elif args.lookup_dispatch_table:
-        result = dispatch_lookup_from_args(args)
+    if __package__ in (None, ""):
+        from intel_gemm_profiler.cli import main as _main
     else:
-        result = workflow(args)
-    print(json.dumps(result, indent=2))
-    if args.validate_product_bundle and result["status"] != "pass":
-        sys.exit(1)
+        from .cli import main as _main
+
+    return _main()
 
 
 if __name__ == "__main__":

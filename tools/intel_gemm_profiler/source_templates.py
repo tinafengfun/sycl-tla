@@ -10,7 +10,7 @@ from .schemas import SCHEMA_VERSION
 from .utils import now_iso
 
 
-DEFAULT_SOURCE_ROOT = Path(__file__).resolve().parents[3]
+DEFAULT_SOURCE_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_TEMPLATE_SCAN_DIRS = ("benchmarks/gemm", "examples", "python/cutlass_library")
 SOURCE_TEMPLATE_SG_LAYOUTS = (
     (1, 4, 1),
@@ -125,4 +125,3 @@ def observed_bmg_template_space(source_root=DEFAULT_SOURCE_ROOT):
         },
         "valid_tile_sg_pairs": valid_tile_sg_pairs,
     }
-

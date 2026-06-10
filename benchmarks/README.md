@@ -42,8 +42,8 @@ ninja benchmarks_gemm_sycl
 
 The Intel GEMM profiler workflow under `test/benchmarks/` now splits configuration into:
 
-- `test/benchmarks/build_config_bmg_perf.json`: build-time CMake and compiler environment
-- `test/benchmarks/runtime_config_bmg_perf.json`: runtime environment used by the search workflow
+- `tools/intel_gemm_profiler/build_config_bmg_perf.json`: build-time CMake and compiler environment
+- `tools/intel_gemm_profiler/runtime_config_bmg_perf.json`: runtime environment used by the search workflow
 
 `default_compiler_profiles()` loads both files and emits them into the workspace `compiler_profiles.json`.
 When `build_config.cmake_vars.DPCPP_SYCL_TARGET` is set to `auto`, the workflow detects the visible Intel GPU with `xpu-smi discovery`, honors `ZE_AFFINITY_MASK` when selecting a device, and writes the resolved target to `reports/device_target_detection.json` plus the generated CMake build plan. Explicit non-`auto` targets still take precedence.

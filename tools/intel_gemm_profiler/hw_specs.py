@@ -9,7 +9,7 @@ from pathlib import Path
 
 from .utils import read_json
 
-DEFAULT_HW_REFERENCE_SPECS_PATH = Path(__file__).resolve().parent.parent / "intel_gemm_hw_reference_specs.json"
+DEFAULT_HW_REFERENCE_SPECS_PATH = Path(__file__).resolve().parent / "intel_gemm_hw_reference_specs.json"
 DEFAULT_HW_SPEC_IDS = {"bmg": "bmg_g21"}
 ELEMENT_BYTES = {"bf16": 2, "f16": 2, "f32": 4}
 

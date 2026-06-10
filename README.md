@@ -67,6 +67,16 @@ Base NVIDIA CUTLASS Versions for SYCL*TLA releases:
   
 **See the [CHANGELOG](https://github.com/intel/sycl-tla/blob/main/CHANGELOG-SYCL.md) for details of all past releases and updates.**
 
+## Pre-refactor baseline
+
+For the upcoming profiler refactor work, the current baseline snapshot is commit
+[`02f44a64`](https://github.com/intel/sycl-tla/commit/02f44a64) tagged as
+[`pre-profiler-refactor-20260610`](https://github.com/intel/sycl-tla/tree/pre-profiler-refactor-20260610).
+
+This baseline includes the exact-shape remote resume fix that reassigns unfinished batches
+when a run is resumed on a different GPU subset, plus the corresponding README and operation
+manual updates for `--resume-run`.
+
 # CuTe
 
 SYCL\*TLA supports the newly introduced core library, CuTe, to describe and manipulate tensors of threads and data.

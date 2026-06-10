@@ -8,12 +8,9 @@ import json
 import sys
 
 from .catalog import SEED_KERNELS
+from .bundle import export_product_bundle_manifest, validate_product_bundle_manifest
 from .dispatch import lookup_dispatch_entry
-from .workflow import (
-    export_product_bundle_manifest,
-    validate_product_bundle_manifest,
-    workflow,
-)
+from .workflow import workflow
 
 
 def build_parser():

@@ -80,6 +80,7 @@ WORKER_SYNC_FILES=(
   tools/intel_gemm_profiler/runtime_config_bmg_perf.json
   tools/intel_gemm_profiler/intel_gemm_kernel_catalog_level0.json
   tools/intel_gemm_profiler/intel_gemm_hw_reference_specs.json
+  tools/intel_gemm_profiler/bundle.py
   tools/intel_gemm_profiler/README.md
   tools/intel_gemm_profiler/OPERATION_MANUAL.md
   tools/intel_gemm_profiler/gen_main.py

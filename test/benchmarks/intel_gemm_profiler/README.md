@@ -444,6 +444,8 @@ roughly:
     - `Makefile`
   - the bundle is intended to preserve the selected generated kernel source and provide a stable
     rebuild/migration artifact for reuse in other projects
+  - this is the preferred way to **dump the actual generated kernel code** for the winning exact-shape
+    results, rather than reconstructing the configuration by hand from report rows alone
 
 ### Using the exported bundle
 

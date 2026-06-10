@@ -83,7 +83,7 @@ class TestExactShapeSearchReport(unittest.TestCase):
             (run_dir / "kernel_metadata.json").write_text(
                 json.dumps(
                     {
-                        "KernelFast": {
+                        "BmgGemmBF16BF16FP32_RRR_GemmExhaustive_128x128x64_SG4x8_ST2": {
                             "layout": "rrr",
                             "runner": "benchmark",
                             "scheduler_family": "Gemm",
@@ -107,7 +107,7 @@ class TestExactShapeSearchReport(unittest.TestCase):
                             "dtype_d": "f32",
                             "dtype_acc": "f32",
                         },
-                        "KernelSlow": {
+                        "BmgGemmBF16BF16FP32_RCR_SplitK_256x128x64_SG8x4_ST2": {
                             "layout": "rcr",
                             "runner": "benchmark",
                             "scheduler_family": "SplitK",
@@ -143,7 +143,7 @@ class TestExactShapeSearchReport(unittest.TestCase):
                 writer.writeheader()
                 writer.writerow(
                     {
-                        "kernel": "KernelFast",
+                        "kernel": "BmgGemmBF16BF16FP32_RRR_GemmExhaustive_128x128x64_SG4x8_ST2",
                         "tflops": "140.0",
                         "status": "OK",
                         "gpu": "0",
@@ -154,7 +154,7 @@ class TestExactShapeSearchReport(unittest.TestCase):
                 )
                 writer.writerow(
                     {
-                        "kernel": "KernelSlow",
+                        "kernel": "BmgGemmBF16BF16FP32_RCR_SplitK_256x128x64_SG8x4_ST2",
                         "tflops": "70.0",
                         "status": "OK",
                         "gpu": "0",
@@ -192,9 +192,9 @@ class TestExactShapeSearchReport(unittest.TestCase):
             summary = json.loads((report_dir / "8192_384_3584" / "summary.json").read_text(encoding="utf-8"))
             self.assertEqual(summary["row_count"], 3)
             self.assertEqual(summary["ok_row_count"], 2)
-            self.assertEqual(summary["fastest5_latency"][0]["kernel"], "KernelFast")
-            self.assertEqual(summary["fastest5_rcr_latency"][0]["kernel"], "KernelSlow")
-            self.assertEqual(summary["top5"][0]["kernel"], "KernelFast")
+            self.assertEqual(summary["fastest5_latency"][0]["kernel"], "BmgGemmBF16BF16FP32_RRR_GemmExhaustive_128x128x64_SG4x8_ST2")
+            self.assertEqual(summary["fastest5_rcr_latency"][0]["kernel"], "BmgGemmBF16BF16FP32_RCR_SplitK_256x128x64_SG8x4_ST2")
+            self.assertEqual(summary["top5"][0]["kernel"], "BmgGemmBF16BF16FP32_RRR_GemmExhaustive_128x128x64_SG4x8_ST2")
             self.assertEqual(summary["top5"][0]["latency_source"], "derived_from_tflops")
             self.assertEqual(summary["fastest5_latency"][0]["measure_iters"], "100")
             self.assertIn("total_runtime_ms", summary["latency_stats"])
@@ -208,12 +208,20 @@ class TestExactShapeSearchReport(unittest.TestCase):
             self.assertTrue((report_dir / "8192_384_3584" / "top1_repro.cfg").exists())
             self.assertTrue((report_dir / "8192_384_3584" / "top1_repro.sh").exists())
             self.assertIn("top1", summary["repro_artifacts"])
+            self.assertIn("top1", summary["export_bundles"])
+            self.assertIn("top5", summary["export_bundles"])
 
             with (report_dir / "8192_384_3584" / "ranked_by_total_runtime.csv").open(
                 "r", encoding="utf-8", newline=""
             ) as handle:
                 rows = list(csv.DictReader(handle))
-            self.assertEqual([row["kernel"] for row in rows], ["KernelFast", "KernelSlow"])
+            self.assertEqual(
+                [row["kernel"] for row in rows],
+                [
+                    "BmgGemmBF16BF16FP32_RRR_GemmExhaustive_128x128x64_SG4x8_ST2",
+                    "BmgGemmBF16BF16FP32_RCR_SplitK_256x128x64_SG8x4_ST2",
+                ],
+            )
             self.assertEqual(rows[0]["latency_source"], "derived_from_tflops")
             self.assertNotEqual(rows[0]["avg_runtime_ms"], "")
             self.assertNotEqual(rows[0]["total_runtime_ms"], "")
@@ -221,12 +229,12 @@ class TestExactShapeSearchReport(unittest.TestCase):
             self.assertEqual(rows[0]["allowed_runtime_sweeps"], "[\"m\", \"n\", \"k\"]")
 
             top1_filter = (report_dir / "8192_384_3584" / "top1_filter.txt").read_text(encoding="utf-8")
-            self.assertEqual(top1_filter.strip(), "^KernelFast$")
+            self.assertEqual(top1_filter.strip(), "^BmgGemmBF16BF16FP32_RRR_GemmExhaustive_128x128x64_SG4x8_ST2$")
             top1_cfg = (report_dir / "8192_384_3584" / "top1_repro.cfg").read_text(encoding="utf-8")
-            self.assertIn("KernelFast", top1_cfg)
+            self.assertIn("BmgGemmBF16BF16FP32_RRR_GemmExhaustive_128x128x64_SG4x8_ST2", top1_cfg)
             self.assertIn("--alpha=1", top1_cfg)
             top5_cfg = (report_dir / "8192_384_3584" / "top5_repro.cfg").read_text(encoding="utf-8")
-            self.assertIn("KernelSlow", top5_cfg)
+            self.assertIn("BmgGemmBF16BF16FP32_RCR_SplitK_256x128x64_SG8x4_ST2", top5_cfg)
             self.assertIn("--split_k_slices=1", top5_cfg)
             top1_script = (report_dir / "8192_384_3584" / "top1_repro.sh").read_text(encoding="utf-8")
             self.assertIn("--config_file=\"$CONFIG_FILE\"", top1_script)
@@ -236,6 +244,39 @@ class TestExactShapeSearchReport(unittest.TestCase):
             self.assertIn('SHARED_DEPS_BUILD="${SHARED_DEPS_BUILD:-$RUN_DIR/workers/gpu0/build}"', top1_script)
             self.assertIn('ln -sfn "$SHARED_DEPS_BUILD/_deps/googlebenchmark-build" "$BUILD_DIR/_deps/googlebenchmark-build"', top1_script)
             self.assertIn("ZE_AFFINITY_MASK", top1_script)
+
+            top1_bundle = report_dir / "8192_384_3584" / "top1_bundle"
+            self.assertTrue((top1_bundle / "kernel_manifest.txt").exists())
+            self.assertTrue((top1_bundle / "kernel_filter.txt").exists())
+            self.assertTrue((top1_bundle / "repro.cfg").exists())
+            self.assertTrue((top1_bundle / "metadata.json").exists())
+            self.assertTrue((top1_bundle / "kernel_config.json").exists())
+            self.assertTrue((top1_bundle / "benchmarks_sycl.hpp").exists())
+            self.assertTrue((top1_bundle / "main.cpp").exists())
+            self.assertTrue((top1_bundle / "build.sh").exists())
+            self.assertTrue((top1_bundle / "run.sh").exists())
+            self.assertTrue((top1_bundle / "Makefile").exists())
+            self.assertTrue((top1_bundle / "README.md").exists())
+
+            top1_bundle_main = (top1_bundle / "main.cpp").read_text(encoding="utf-8")
+            self.assertIn("RUN(BmgGemmBF16BF16FP32_RRR_GemmExhaustive_128x128x64_SG4x8_ST2)", top1_bundle_main)
+            top1_bundle_hpp = (top1_bundle / "benchmarks_sycl.hpp").read_text(encoding="utf-8")
+            self.assertIn(
+                "BMG_DECLARE_EXHAUSTIVE_GEMM_TILE_STAGE(BmgGemmBF16BF16FP32_RRR, Gemm_Bench_BF16FP32_RRR, MMAAtom, 128, 128, 64, 4, 8, 2)",
+                top1_bundle_hpp,
+            )
+            top1_bundle_build = (top1_bundle / "build.sh").read_text(encoding="utf-8")
+            self.assertIn('cp "$BUNDLE_DIR/benchmarks_sycl.hpp" "$OVERLAY_REPO/benchmarks/gemm/benchmarks_sycl.hpp"', top1_bundle_build)
+            self.assertIn('cp "$BUNDLE_DIR/main.cpp" "$OVERLAY_REPO/benchmarks/gemm/main.cpp"', top1_bundle_build)
+            top1_bundle_makefile = (top1_bundle / "Makefile").read_text(encoding="utf-8")
+            self.assertIn("run: build", top1_bundle_makefile)
+            self.assertIn('bash "$(BUNDLE_DIR)/build.sh"', top1_bundle_makefile)
+            top1_bundle_meta = json.loads((top1_bundle / "metadata.json").read_text(encoding="utf-8"))
+            self.assertEqual(
+                top1_bundle_meta["kernels"][0]["kernel"],
+                "BmgGemmBF16BF16FP32_RRR_GemmExhaustive_128x128x64_SG4x8_ST2",
+            )
+            self.assertEqual(top1_bundle_meta["run_meta_subset"]["git_head"], "deadbeef")
 
     def test_gen_main_emits_latency_fields(self):
         with tempfile.TemporaryDirectory() as tmpdir:

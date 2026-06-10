@@ -443,6 +443,9 @@ Each bundle contains generated `benchmarks_sycl.hpp` / `main.cpp`, replay config
 and `build.sh` / `run.sh` / `Makefile` so the selected kernels can be rebuilt and inspected outside
 the active search run.
 
+These bundles are also the recommended way to **dump the real generated kernel source** for the
+top exact-shape results and carry that source into a separate rebuild or migration workflow.
+
 Typical usage:
 
 ```bash

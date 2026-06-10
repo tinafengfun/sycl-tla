@@ -77,6 +77,22 @@ This baseline includes the exact-shape remote resume fix that reassigns unfinish
 when a run is resumed on a different GPU subset, plus the corresponding README and operation
 manual updates for `--resume-run`.
 
+## Exact-shape kernel dump/export bundles
+
+The exact-shape profiler report flow can now export `top1_bundle/` and `top5_bundle/` artifacts
+that preserve the **real generated benchmark kernel source** for the selected winners.
+
+This is useful when you want to:
+
+- inspect the actual generated `benchmarks_sycl.hpp` and `main.cpp` instead of a hand-written approximation
+- rebuild the winning kernels outside the transient search worker directory
+- keep a stable migration/replay bundle for porting the selected kernel configuration into another project
+
+See:
+
+- `test/benchmarks/intel_gemm_profiler/README.md`
+- `test/benchmarks/intel_gemm_profiler/OPERATION_MANUAL.md`
+
 # CuTe
 
 SYCL\*TLA supports the newly introduced core library, CuTe, to describe and manipulate tensors of threads and data.

@@ -110,7 +110,8 @@ from .ali_dataset import build_ali_gemm_docs
 from .phase_a import build_compiler_flags_probe_summary, empty_anomaly_report, run_phase_a_probe
 from .cli import build_parser, dispatch_lookup_from_args, main
 from .bundle import build_artifact_bundle_manifest, export_product_bundle_manifest, validate_product_bundle_manifest
-from .workflow import SEARCH_STRATEGY_PRESETS, apply_bruteforce_scheduler_search_defaults, apply_search_strategy_defaults, build_candidate_build_plan, build_scheduler_bruteforce_plan, benchmark_batch_plan_by_kernel_id, benchmark_exe_for_build_plan, execute_candidate_build_plan, execute_candidate_build_preflight_plans, limit_shapes_and_reference, load_target_shapes_and_reference, run_entries_with_batch_benchmarks, validate_candidate_auto_build_mode, workflow
+from .build_plan import benchmark_batch_plan_by_kernel_id, benchmark_command_strings, benchmark_exe_for_build_plan, benchmark_log_paths, build_candidate_build_plan, detect_available_vcpus, execute_candidate_build_plan, execute_candidate_build_preflight_plans, resolve_candidate_build_jobs, run_entries_with_batch_benchmarks, validate_candidate_auto_build_mode
+from .workflow import SEARCH_STRATEGY_PRESETS, apply_bruteforce_scheduler_search_defaults, apply_search_strategy_defaults, build_scheduler_bruteforce_plan, limit_shapes_and_reference, load_target_shapes_and_reference, workflow
 
 __all__ = [
     "BENCHMARK_ERROR_RE",
@@ -139,12 +140,15 @@ __all__ = [
     "build_candidate_build_plan",
     "build_candidate_coverage_report",
     "benchmark_batch_plan_by_kernel_id",
+    "benchmark_command_strings",
     "benchmark_exe_for_build_plan",
+    "benchmark_log_paths",
     "build_compiler_profile_probe_entries",
     "build_compiler_flags_probe_summary",
     "compute_efficiency_bounds",
     "detect_probe_anomalies",
     "discover_xpu_smi_devices",
+    "detect_available_vcpus",
     "dispatch_lookup_from_args",
     "build_dispatch_table",
     "build_dispatch_index",
@@ -204,6 +208,7 @@ __all__ = [
     "resolve_executable",
     "resolve_hw_reference_spec",
     "resolve_device_target",
+    "resolve_candidate_build_jobs",
     "resolve_profiles_device_target",
     "selected_runtime_env",
     "selected_device_id",

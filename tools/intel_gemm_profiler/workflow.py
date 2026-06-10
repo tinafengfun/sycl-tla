@@ -6,7 +6,6 @@
 import copy
 import csv
 import json
-import os
 import sys
 from pathlib import Path
 
@@ -41,6 +40,18 @@ if __package__ in (None, ""):
         export_product_bundle_manifest,
         validate_product_bundle_manifest,
     )
+    from intel_gemm_profiler.build_plan import (
+        benchmark_batch_plan_by_kernel_id,
+        benchmark_command_strings,
+        benchmark_log_paths,
+        build_candidate_build_plan,
+        detect_available_vcpus,
+        execute_candidate_build_plan,
+        execute_candidate_build_preflight_plans,
+        resolve_candidate_build_jobs,
+        run_entries_with_batch_benchmarks,
+        validate_candidate_auto_build_mode,
+    )
     from intel_gemm_profiler.dispatch import DISPATCH_KEY_FIELDS, load_dispatch_table, lookup_dispatch_entry
     from intel_gemm_profiler.device_target import resolve_profiles_device_target
     from intel_gemm_profiler.hw_specs import resolve_hw_reference_spec
@@ -49,7 +60,7 @@ if __package__ in (None, ""):
         empty_anomaly_report,
         run_phase_a_probe,
     )
-    from intel_gemm_profiler.runner import collect_environment_metadata, run_benchmark, run_entries_with_benchmark, run_entries_with_streamk_example
+    from intel_gemm_profiler.runner import collect_environment_metadata, run_entries_with_benchmark, run_entries_with_streamk_example
     from intel_gemm_profiler.selector import build_candidate_coverage_report, build_dispatch_table, build_phase_a_summary, build_phase_b_summary, build_reference_comparison, build_run_summary, write_results_csv
     from intel_gemm_profiler.source_templates import is_valid_xe2_tile_sg
     from intel_gemm_profiler.utils import ensure_dir, now_iso, read_json, resolve_executable, shell_init_with_env, shell_join, write_json
@@ -82,6 +93,18 @@ else:
         export_product_bundle_manifest,
         validate_product_bundle_manifest,
     )
+    from .build_plan import (
+        benchmark_batch_plan_by_kernel_id,
+        benchmark_command_strings,
+        benchmark_log_paths,
+        build_candidate_build_plan,
+        detect_available_vcpus,
+        execute_candidate_build_plan,
+        execute_candidate_build_preflight_plans,
+        resolve_candidate_build_jobs,
+        run_entries_with_batch_benchmarks,
+        validate_candidate_auto_build_mode,
+    )
     from .dispatch import DISPATCH_KEY_FIELDS, load_dispatch_table, lookup_dispatch_entry
     from .device_target import resolve_profiles_device_target
     from .hw_specs import resolve_hw_reference_spec
@@ -90,7 +113,7 @@ else:
         empty_anomaly_report,
         run_phase_a_probe,
     )
-    from .runner import collect_environment_metadata, run_benchmark, run_entries_with_benchmark, run_entries_with_streamk_example
+    from .runner import collect_environment_metadata, run_entries_with_benchmark, run_entries_with_streamk_example
     from .selector import build_candidate_coverage_report, build_dispatch_table, build_phase_a_summary, build_phase_b_summary, build_reference_comparison, build_run_summary, write_results_csv
     from .source_templates import is_valid_xe2_tile_sg
     from .utils import ensure_dir, now_iso, read_json, resolve_executable, shell_init_with_env, shell_join, write_json
@@ -128,408 +151,6 @@ def filter_candidate_space_by_compiled_kernels(candidate_space, compiled_kernels
     if candidate_space["candidates"] and not filtered["candidates"]:
         raise ValueError("Compiled kernel list does not match any generated benchmark candidates.")
     return filtered
-
-
-def benchmark_exe_for_build_plan(build_dir, build_target):
-    return str(Path(build_dir) / "benchmarks" / "gemm" / build_target)
-
-
-def detect_available_vcpus():
-    try:
-        return max(1, len(os.sched_getaffinity(0)))
-    except Exception:
-        return max(1, os.cpu_count() or 1)
-
-
-def resolve_candidate_build_jobs(max_workers, total_vcpus=None):
-    total = max(1, int(total_vcpus or detect_available_vcpus()))
-    workers = max(1, int(max_workers or 1))
-    return max(1, total // workers)
-
-
-def candidate_build_commands(source_dir, build_dir, build_target, cmake_vars, build_parallelism=0):
-    configure_command = ["cmake", "-S", str(source_dir), "-B", str(build_dir)]
-    configure_command.extend(f"-D{name}={value}" for name, value in sorted(cmake_vars.items()))
-    build_command = [
-        "cmake",
-        "--build",
-        str(build_dir),
-        "--target",
-        build_target,
-    ]
-    if int(build_parallelism or 0) > 0:
-        build_command.extend(["--parallel", str(int(build_parallelism))])
-    else:
-        build_command.append("--parallel")
-    return configure_command, build_command
-
-
-def build_batch_preflight_plans(build_manifest, source_dir, build_dir, base_cmake_vars, build_parallelism=0):
-    cmake_config = build_manifest["cmake_config"]
-    build_target = cmake_config["build_target"]
-    kernel_filter_var = cmake_config["kernel_filter_cmake_var"]
-    plans = []
-    for batch in build_manifest.get("selected_kernel_batches", []):
-        batch_filter_path = batch.get("kernel_filter_path", "")
-        if not batch_filter_path:
-            continue
-        batch_build_dir = Path(build_dir) / "candidate_batch_preflight" / batch["batch_id"]
-        batch_cmake_vars = dict(base_cmake_vars)
-        batch_cmake_vars[kernel_filter_var] = batch_filter_path
-        configure_command, build_command = candidate_build_commands(
-            source_dir,
-            batch_build_dir,
-            build_target,
-            batch_cmake_vars,
-            build_parallelism=build_parallelism,
-        )
-        plans.append(
-            {
-                "schema_version": build_manifest["schema_version"],
-                "generated_at": build_manifest["generated_at"],
-                "build_target": build_target,
-                "batch_id": batch["batch_id"],
-                "batch_index": batch["batch_index"],
-                "kernel_count": batch["kernel_count"],
-                "selected_kernel_list": batch["selected_kernel_list"],
-                "kernel_filter_file": batch_filter_path,
-                "build_dir": str(batch_build_dir),
-                "benchmark_exe": benchmark_exe_for_build_plan(batch_build_dir, build_target),
-                "build_parallelism": int(build_parallelism or 0),
-                "cmake_vars": batch_cmake_vars,
-                "configure_command": configure_command,
-                "build_command": build_command,
-                "configure_command_line": shell_join(configure_command),
-                "build_command_line": shell_join(build_command),
-            }
-        )
-    return plans
-
-
-def build_candidate_build_plan(
-    build_manifest,
-    source_dir,
-    build_dir,
-    kernel_filter_path,
-    googlebenchmark_dir=None,
-    googlebenchmark_build_dir=None,
-    cmake_cxx_compiler="",
-    build_parallelism=0,
-    batch_build_parallelism=0,
-):
-    cmake_config = build_manifest["cmake_config"]
-    cmake_vars = dict(cmake_config["cmake_vars"])
-    kernel_filter_var = cmake_config["kernel_filter_cmake_var"]
-    cmake_vars[kernel_filter_var] = str(kernel_filter_path)
-    if googlebenchmark_dir:
-        cmake_vars["GOOGLEBENCHMARK_DIR"] = str(googlebenchmark_dir)
-    if googlebenchmark_build_dir:
-        cmake_vars["GOOGLEBENCHMARK_BUILD_DIR"] = str(googlebenchmark_build_dir)
-    if cmake_cxx_compiler:
-        cmake_vars["CMAKE_CXX_COMPILER"] = cmake_cxx_compiler
-    configure_command, build_command = candidate_build_commands(
-        source_dir,
-        build_dir,
-        cmake_config["build_target"],
-        cmake_vars,
-        build_parallelism=build_parallelism,
-    )
-    return {
-        "schema_version": build_manifest["schema_version"],
-        "generated_at": build_manifest["generated_at"],
-        "build_target": cmake_config["build_target"],
-        "source_dir": str(source_dir),
-        "build_dir": str(build_dir),
-        "benchmark_exe": benchmark_exe_for_build_plan(build_dir, cmake_config["build_target"]),
-        "kernel_filter_file": str(kernel_filter_path),
-        "googlebenchmark_dir": str(googlebenchmark_dir) if googlebenchmark_dir else "",
-        "googlebenchmark_build_dir": str(googlebenchmark_build_dir) if googlebenchmark_build_dir else "",
-        "cmake_cxx_compiler": cmake_cxx_compiler,
-        "build_parallelism": int(build_parallelism or 0),
-        "batch_build_parallelism": int(batch_build_parallelism or 0),
-        "selected_kernel_count": build_manifest["selected_kernel_count"],
-        "selected_kernel_batch_size": build_manifest.get("selected_kernel_batch_size", 0),
-        "selected_kernel_batches": build_manifest.get("selected_kernel_batches", []),
-        "batch_preflight_plans": build_batch_preflight_plans(
-            build_manifest,
-            source_dir,
-            build_dir,
-            cmake_vars,
-            build_parallelism=batch_build_parallelism,
-        ),
-        "cmake_vars": cmake_vars,
-        "configure_command": configure_command,
-        "build_command": build_command,
-        "configure_command_line": shell_join(configure_command),
-        "build_command_line": shell_join(build_command),
-    }
-
-
-def execute_candidate_build_plan(build_plan, log_dir, shell_init="", timeout=None, log_prefix="candidate_build"):
-    ensure_dir(Path(log_dir))
-    steps = [
-        ("configure", build_plan["configure_command"], Path(log_dir) / f"{log_prefix}_configure.log"),
-        ("build", build_plan["build_command"], Path(log_dir) / f"{log_prefix}.log"),
-    ]
-    results = []
-    for step, command, log_path in steps:
-        process, timed_out, timeout_reason = run_benchmark(command, log_path, shell_init=shell_init, timeout=timeout)
-        status = "timeout" if timed_out else ("pass" if process.returncode == 0 else "fail")
-        item = {
-            "step": step,
-            "status": status,
-            "returncode": process.returncode,
-            "command": shell_join(command),
-            "log": str(log_path),
-        }
-        if timed_out:
-            item["timeout_reason"] = timeout_reason
-        results.append(item)
-        if status != "pass":
-            return {
-                "schema_version": build_plan["schema_version"],
-                "generated_at": build_plan["generated_at"],
-                "status": status,
-                "failure_step": step,
-                "failure_reason": f"Candidate benchmark {step} failed with status {status}. See {log_path}.",
-                "build_target": build_plan["build_target"],
-                "benchmark_exe": build_plan["benchmark_exe"],
-                "build_parallelism": int(build_plan.get("build_parallelism", 0)),
-                "selected_kernel_count": build_plan.get("selected_kernel_count", ""),
-                "kernel_filter_file": build_plan.get("kernel_filter_file", ""),
-                "batch_id": build_plan.get("batch_id", ""),
-                "steps": results,
-            }
-    return {
-        "schema_version": build_plan["schema_version"],
-        "generated_at": build_plan["generated_at"],
-        "status": "pass",
-        "build_target": build_plan["build_target"],
-        "benchmark_exe": build_plan["benchmark_exe"],
-        "selected_kernel_count": build_plan.get("selected_kernel_count", ""),
-        "kernel_filter_file": build_plan.get("kernel_filter_file", ""),
-        "batch_id": build_plan.get("batch_id", ""),
-        "steps": results,
-    }
-
-
-def _batch_build_already_done(build_log_path, batch_plan):
-    """Check if a batch was already successfully built (idempotent check)."""
-    import os
-    log = Path(build_log_path) if not isinstance(build_log_path, Path) else build_log_path
-    exe = Path(batch_plan.get("benchmark_exe", ""))
-    if not log.exists():
-        return False
-    if not exe.exists():
-        # log exists but no executable → partial build, must rebuild
-        return False
-    # Check last 3 lines for build success marker
-    try:
-        tail = log.read_text(encoding="utf-8", errors="replace").splitlines()[-5:]
-        for line in tail:
-            if "Build succeeded" in line or "[100%] Built target" in line:
-                return True
-    except Exception:
-        pass
-    return False
-
-
-def _load_preflight_progress(progress_path):
-    """Load batch completion state from JSON progress file."""
-    try:
-        return read_json(progress_path).get("completed_batches", {})
-    except Exception:
-        return {}
-
-
-def _save_preflight_progress(progress_path, completed_batches):
-    """Atomically save batch completion state."""
-    tmp = Path(str(progress_path) + ".tmp")
-    write_json(tmp, {
-        "schema_version": "1.0",
-        "generated_at": now_iso(),
-        "completed_batches": completed_batches,
-    })
-    os.replace(tmp, progress_path)
-
-
-def execute_candidate_build_preflight_plans(build_plan, log_dir, shell_init="", timeout=None, max_workers=1, resume=False, progress_path=None):
-    preflight_plans = build_plan.get("batch_preflight_plans", [])
-    if not preflight_plans:
-        return {
-            "schema_version": build_plan["schema_version"],
-            "generated_at": build_plan["generated_at"],
-            "status": "not_run",
-            "reason": "no batch_preflight_plans",
-            "batch_count": 0,
-            "batches": [],
-        }
-    # Sort plans by batch_index for predictable output
-    plans_sorted = sorted(preflight_plans, key=lambda p: p["batch_index"])
-
-    # Resume support: skip batches already built successfully
-    resumed_batches = {}
-    if resume and progress_path:
-        progress_state = _load_preflight_progress(Path(progress_path))
-        for plan in plans_sorted:
-            bid = plan["batch_id"]
-            log_path = Path(log_dir) / f"candidate_build_preflight_{bid}.log"
-            # Check persisted progress first, then fallback to log inspection
-            if progress_state.get(bid) == "pass" and _batch_build_already_done(log_path, plan):
-                resumed_batches[plan["batch_index"]] = {
-                    "batch_id": bid,
-                    "batch_index": plan["batch_index"],
-                    "kernel_count": plan["kernel_count"],
-                    "status": "pass",
-                    "resumed": True,
-                }
-        if resumed_batches:
-            remaining = [p for p in plans_sorted if p["batch_index"] not in resumed_batches]
-            print(f"  [resume] {len(resumed_batches)} batches already built, {len(remaining)} remaining")
-            plans_sorted = remaining
-
-    def _build_one(plan):
-        summary = execute_candidate_build_plan(
-            plan,
-            log_dir,
-            shell_init=shell_init,
-            timeout=timeout,
-            log_prefix=f"candidate_build_preflight_{plan['batch_id']}",
-        )
-        summary["batch_id"] = plan["batch_id"]
-        summary["batch_index"] = plan["batch_index"]
-        summary["kernel_count"] = plan["kernel_count"]
-        return summary
-
-    if max_workers <= 1:
-        batches = [_build_one(plan) for plan in plans_sorted]
-        # Save progress once after all builds complete
-        if progress_path:
-            all_done = dict(resumed_batches)
-            for b in batches:
-                if b.get("status") == "pass":
-                    all_done[b["batch_id"]] = "pass"
-            if all_done:
-                _save_preflight_progress(Path(progress_path), all_done)
-    else:
-        import concurrent.futures
-        import threading
-
-        total_vcpus = detect_available_vcpus()
-        cores_per_worker = resolve_candidate_build_jobs(max_workers, total_vcpus=total_vcpus)
-        lock = threading.Lock()
-        results_by_index = {}
-        completed = [0]
-
-        def _build_parallel(plan):
-            result = _build_one(plan)
-            with lock:
-                results_by_index[plan["batch_index"]] = result
-                completed[0] += 1
-                if completed[0] % 50 == 0 or completed[0] <= 5:
-                    passed = sum(1 for r in results_by_index.values() if r["status"] == "pass")
-                    print(f"  [preflight] {completed[0]}/{len(plans_sorted)} batches ({passed} passed, {max_workers} workers)", flush=True)
-            return result
-
-        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = []
-            for plan in plans_sorted:
-                futures.append(executor.submit(_build_parallel, plan))
-            concurrent.futures.wait(futures)
-
-        # Reassemble in batch_index order (merge resumed + newly built)
-        batches = [results_by_index[i] for i in sorted(results_by_index)]
-        # Prepend resumed batches (they go first in order)
-        if resumed_batches:
-            batches = [resumed_batches[i] for i in sorted(resumed_batches)] + batches
-
-        # Save progress once after all builds complete (avoids race condition)
-        if progress_path:
-            all_done = dict(resumed_batches)
-            for b in batches:
-                if b.get("status") == "pass":
-                    all_done[b["batch_id"]] = "pass"
-            if all_done:
-                _save_preflight_progress(Path(progress_path), all_done)
-
-    failed = [batch for batch in batches if batch["status"] != "pass"]
-    status = "pass" if not failed else ("timeout" if any(batch["status"] == "timeout" for batch in failed) else "fail")
-    result = {
-        "schema_version": build_plan["schema_version"],
-        "generated_at": build_plan["generated_at"],
-        "status": status,
-        "batch_count": len(batches),
-        "passed_batches": sum(1 for batch in batches if batch["status"] == "pass"),
-        "failed_batches": len(failed),
-        "failure_reason": failed[0].get("failure_reason", "") if failed else "",
-        "batches": batches,
-        "max_workers": max_workers,
-        "resumed_batches": len(resumed_batches),
-        "effective_build_parallelism": int(build_plan.get("batch_build_parallelism", 0) or cores_per_worker),
-    }
-    try:
-        result["total_vcpus"] = total_vcpus
-        result["cores_per_worker"] = cores_per_worker
-    except NameError:
-        result["total_vcpus"] = 1
-        result["cores_per_worker"] = 1
-    return result
-
-
-
-def benchmark_batch_plan_by_kernel_id(build_plan):
-    mapping = {}
-    for plan in build_plan.get("batch_preflight_plans", []):
-        for kernel_id in plan.get("selected_kernel_list", []):
-            mapping[kernel_id] = plan
-    return mapping
-
-
-def batched_stage_path(path, batch_id):
-    return path.with_name(f"{path.stem}_{batch_id}{path.suffix}")
-
-
-def run_entries_with_batch_benchmarks(entries, config_path, manifest_path, log_path, batch_plan_by_kernel_id, cwd=None, shell_init=None, timeout=None, chunk_size=0):
-    grouped = {}
-    for entry in entries:
-        kernel_id = entry["candidate"]["kernel_id"]
-        plan = batch_plan_by_kernel_id.get(kernel_id)
-        if plan is None:
-            raise ValueError(f"No batch preflight benchmark plan found for kernel '{kernel_id}'.")
-        grouped.setdefault(plan["batch_id"], {"plan": plan, "entries": []})["entries"].append(entry)
-    rows = []
-    commands = []
-    log_paths = []
-    for batch_id, item in sorted(grouped.items()):
-        batch_log_path = batched_stage_path(log_path, batch_id)
-        batch_rows, command = run_entries_with_benchmark(
-            item["entries"],
-            batched_stage_path(config_path, batch_id),
-            batched_stage_path(manifest_path, batch_id),
-            batch_log_path,
-            item["plan"]["benchmark_exe"],
-            cwd=cwd,
-            shell_init=shell_init,
-            timeout=timeout,
-            chunk_size=chunk_size,
-        )
-        rows.extend(batch_rows)
-        commands.extend(command if command and isinstance(command[0], (list, tuple)) else [command])
-        log_paths.extend(benchmark_log_paths(batch_log_path, command))
-    return rows, commands, log_paths
-
-
-def validate_candidate_auto_build_mode(args, dry_run_mode, probe_mode):
-    if not args.build_candidate_benchmark or dry_run_mode or args.skip_run or args.constraints_json:
-        return
-    if probe_mode not in {"auto", "run"}:
-        return
-    if resolve_executable(args.benchmark_exe, cwd=args.cwd):
-        return
-    raise ValueError(
-        "--build-candidate-benchmark builds the generated benchmark after Phase A. "
-        "Use --probe-mode=off or --constraints-json when no prebuilt --benchmark-exe is available for Phase A probes."
-    )
 
 
 SEARCH_STRATEGY_PRESETS = {
@@ -1005,23 +626,6 @@ def limit_shapes_and_reference(shapes_doc, reference_doc=None, max_shapes=0):
     limited_reference_doc["shape_limit"] = max_shapes
     limited_reference_doc["unlimited_reference_entries"] = len(reference_doc.get("entries", []))
     return limited_shapes_doc, limited_reference_doc
-
-
-def benchmark_command_strings(command_or_commands):
-    if not command_or_commands:
-        return []
-    if isinstance(command_or_commands[0], (list, tuple)):
-        return [shell_join(command) for command in command_or_commands]
-    return [shell_join(command_or_commands)]
-
-
-def benchmark_log_paths(log_path, command_or_commands):
-    if not command_or_commands or not isinstance(command_or_commands[0], (list, tuple)):
-        return [str(log_path)]
-    return [
-        str(log_path.with_name(f"{log_path.stem}_part{chunk_index:03d}{log_path.suffix}"))
-        for chunk_index in range(len(command_or_commands))
-    ]
 
 
 def workflow(args):

@@ -123,6 +123,11 @@ python3 tools/remote_exact_shape_search_ctl.py --accept-new-host-key launch \
 python3 tools/remote_exact_shape_search_ctl.py --accept-new-host-key status
 ```
 
+If you need to resume the same run on a different GPU subset, relaunch with the same
+`--run-id`, add `--resume-run`, and pass the new `--gpu-ids`. The launcher now rewrites
+the per-GPU batch lists from the existing manifest, so unfinished batches are redistributed
+across the current GPU set instead of staying pinned to the original launch layout.
+
 ### 4. Generate exact-shape report
 
 ```bash
@@ -422,6 +427,73 @@ roughly:
 - old runs that only recorded `tflops` are still supported:
   - report generation backfills latency from `m*n*k*l` and measured TFLOPS
   - those rows are marked with `latency_source=derived_from_tflops`
+- exact-shape reports now also emit exportable kernel bundles for `top1` and `top5` under
+  `<run_dir>/reports/<shape_tag>/`:
+  - `top1_bundle/`
+  - `top5_bundle/`
+  - each bundle contains:
+    - generated `benchmarks_sycl.hpp`
+    - generated `main.cpp`
+    - `kernel_manifest.txt`
+    - `kernel_filter.txt`
+    - `repro.cfg`
+    - `metadata.json`
+    - `kernel_config.json`
+    - `build.sh`
+    - `run.sh`
+    - `Makefile`
+  - the bundle is intended to preserve the selected generated kernel source and provide a stable
+    rebuild/migration artifact for reuse in other projects
+
+### Using the exported bundle
+
+1. Regenerate the exact-shape report for a run:
+
+```bash
+python3 tools/exact_shape_search_report.py \
+    --run-dir /root/.../screen_runs/shape_search_8192_76032_8192_sched_expanded_20260609_2015 \
+    --shape-tag 8192_76032_8192
+```
+
+2. Enter one of the exported bundles:
+
+```bash
+cd /root/.../screen_runs/shape_search_8192_76032_8192_sched_expanded_20260609_2015/reports/8192_76032_8192/top5_bundle
+```
+
+3. Inspect the generated kernel source:
+
+```bash
+sed -n '1,120p' benchmarks_sycl.hpp
+sed -n '1,120p' main.cpp
+cat kernel_manifest.txt
+cat repro.cfg
+```
+
+4. Rebuild the generated source against a compatible `sycl-tla` checkout:
+
+```bash
+make build REPO_ROOT=/path/to/sycl-tla
+```
+
+If you already have a populated shared dependency build tree from an exact-shape worker or prior
+benchmark build, you can reuse it to avoid rebuilding Google Benchmark / GoogleTest:
+
+```bash
+make build \
+    REPO_ROOT=/path/to/sycl-tla \
+    SHARED_DEPS_BUILD=/root/.../workers/gpu0/build
+```
+
+5. Replay the selected kernels:
+
+```bash
+make run REPO_ROOT=/path/to/sycl-tla
+```
+
+The bundle rebuild path works by copying the exported `benchmarks_sycl.hpp` and `main.cpp` into a
+temporary overlay repo, then compiling `cutlass_benchmarks_gemm_sycl` there. This preserves the
+generated kernel source while avoiding dependence on the original active worker directory.
 
 ## Validation status for this delivery
 

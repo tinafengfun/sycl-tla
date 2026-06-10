@@ -497,7 +497,33 @@ generate_manifests() {
   if [ "$RESUME_RUN" = "1" ] && [ -f "$RUN_DIR/manifest.json" ]; then
     python3 - <<PY
 import json
-manifest = json.load(open("${RUN_DIR}/manifest.json"))
+from pathlib import Path
+
+run_dir = Path("${RUN_DIR}")
+manifest_dir = Path("${MANIFEST_DIR}")
+gpu_ids = [int(x) for x in "${GPU_IDS_CSV}".split(",") if x]
+
+manifest_path = run_dir / "manifest.json"
+manifest = json.load(open(manifest_path))
+batch_count = int(manifest.get("batch_count", 0) or 0)
+
+for path in manifest_dir.glob("gpu*_batches.txt"):
+    path.unlink()
+
+for gpu in gpu_ids:
+    (manifest_dir / f"gpu{gpu}_batches.txt").write_text("", encoding="utf-8")
+
+for index in range(batch_count):
+    batch_id = f"batch_{index:04d}"
+    assigned_gpu = gpu_ids[index % len(gpu_ids)]
+    with (manifest_dir / f"gpu{assigned_gpu}_batches.txt").open("a", encoding="utf-8") as handle:
+        handle.write(batch_id + "\\n")
+    if batch_id in manifest and isinstance(manifest[batch_id], dict):
+        manifest[batch_id]["gpu"] = assigned_gpu
+
+manifest["gpu_count"] = len(gpu_ids)
+manifest_path.write_text(json.dumps(manifest, indent=2) + "\\n", encoding="utf-8")
+
 print(
     json.dumps(
         {

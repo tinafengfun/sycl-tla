@@ -355,6 +355,30 @@ python3 tools/remote_exact_shape_search_ctl.py --accept-new-host-key stop \
   --run-dir /root/cutlass_profile_device7_b70_2500mhz/screen_runs/shape_search_8192_384_3584_sched_expanded
 ```
 
+### 4.5 Resume on a different GPU set
+
+To keep the same run directory and completed CSVs but continue on a smaller or different GPU
+subset, relaunch with the original `--run-id` and add `--resume-run`:
+
+```bash
+python3 tools/remote_exact_shape_search_ctl.py --accept-new-host-key launch \
+  --run-id shape_search_8192_384_3584_sched_expanded \
+  --shapes 8192x384x3584 \
+  --layouts rcr,rrr \
+  --kernel-catalog-source layered_bmg_scheduler_expanded \
+  --batch-size 1 \
+  --gpu-ids 4,5,6 \
+  --resume-run
+```
+
+Behavior note:
+
+- completed CSVs remain in place
+- incomplete batches are still expected to finish
+- the launcher rewrites `manifests/gpu*_batches.txt` from `manifest.json` using the current
+  `--gpu-ids`, so remaining work is redistributed onto the new GPU set rather than staying
+  pinned to the original launch's per-GPU assignment
+
 ## 5. Reporting
 
 ### 5.1 Generate report
@@ -409,6 +433,45 @@ scp root@10.239.11.149:/root/cutlass_profile_device7_b70_2500mhz/screen_runs/sha
 This delivery already pulled the current merged CSV to:
 
 `/mnt/c/work/src/cutlas_profile/out/exact_shape_analysis/shape_search_8192_384_3584_sched_expanded_20260606_2200/all_kernels_8192_384_3584.csv`
+
+Exact-shape reports now also emit export bundles under `<run_dir>/reports/<shape_tag>/`:
+
+- `top1_bundle/`
+- `top5_bundle/`
+
+Each bundle contains generated `benchmarks_sycl.hpp` / `main.cpp`, replay config files, metadata,
+and `build.sh` / `run.sh` / `Makefile` so the selected kernels can be rebuilt and inspected outside
+the active search run.
+
+Typical usage:
+
+```bash
+python3 tools/exact_shape_search_report.py \
+  --run-dir /root/.../screen_runs/shape_search_8192_76032_8192_sched_expanded_20260609_2015 \
+  --shape-tag 8192_76032_8192
+
+cd /root/.../screen_runs/shape_search_8192_76032_8192_sched_expanded_20260609_2015/reports/8192_76032_8192/top5_bundle
+
+# inspect generated kernel source
+sed -n '1,120p' benchmarks_sycl.hpp
+sed -n '1,120p' main.cpp
+cat kernel_manifest.txt
+cat repro.cfg
+
+# rebuild
+make build REPO_ROOT=/path/to/sycl-tla
+
+# optional: reuse shared dependency build outputs
+make build \
+  REPO_ROOT=/path/to/sycl-tla \
+  SHARED_DEPS_BUILD=/root/.../workers/gpu0/build
+
+# replay the exported kernels
+make run REPO_ROOT=/path/to/sycl-tla
+```
+
+The bundle rebuild uses a temporary overlay repo so the exported generated source can be compiled
+without relying on the original active worker directory.
 
 ## 7. Validation checklist before push
 

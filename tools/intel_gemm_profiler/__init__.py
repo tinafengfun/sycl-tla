@@ -64,16 +64,8 @@ from .runner import (
 )
 from .runner_benchmark import run_benchmark
 from .runner_benchmark_parse import parse_benchmark_log, parse_metric, timeout_rows
-from .selector import (
-    build_dispatch_table,
-    build_candidate_coverage_report,
-    build_phase_a_summary,
-    build_phase_b_summary,
-    build_reference_comparison,
-    build_run_summary,
-    median_or_nan,
-    write_results_csv,
-)
+from .selector import build_dispatch_table
+from .selector_summary import build_candidate_coverage_report, build_phase_a_summary, build_phase_b_summary, build_reference_comparison, build_run_summary, median_or_nan, write_results_csv
 from .dispatch import (
     DISPATCH_KEY_FIELDS,
     build_dispatch_index,

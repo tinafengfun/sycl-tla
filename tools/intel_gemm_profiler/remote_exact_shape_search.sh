@@ -79,6 +79,7 @@ WORKER_SYNC_FILES=(
   tools/intel_gemm_profiler/runner_benchmark_parse.py
   tools/intel_gemm_profiler/schemas.py
   tools/intel_gemm_profiler/selector.py
+  tools/intel_gemm_profiler/selector_summary.py
   tools/intel_gemm_profiler/source_templates.py
   tools/intel_gemm_profiler/utils.py
   tools/intel_gemm_profiler/workflow.py

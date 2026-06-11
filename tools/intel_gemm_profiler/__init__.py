@@ -107,11 +107,12 @@ from .dispatch import (
     validate_dispatch_table,
 )
 from .ali_dataset import build_ali_gemm_docs
+from .analysis import REGULAR_GEMM_FULL_CONFIG_FIELDS, SCHEDULER_BRUTEFORCE_CONFIG_FIELDS, build_regular_gemm_gap_scan, build_scheduler_bruteforce_gap_scan, build_scheduler_bruteforce_plan, collect_regular_gemm_full_config_rows, collect_scheduler_bruteforce_full_config_rows
 from .phase_a import build_compiler_flags_probe_summary, empty_anomaly_report, run_phase_a_probe
 from .cli import build_parser, dispatch_lookup_from_args, main
 from .bundle import build_artifact_bundle_manifest, export_product_bundle_manifest, validate_product_bundle_manifest
 from .build_plan import benchmark_batch_plan_by_kernel_id, benchmark_command_strings, benchmark_exe_for_build_plan, benchmark_log_paths, build_candidate_build_plan, detect_available_vcpus, execute_candidate_build_plan, execute_candidate_build_preflight_plans, resolve_candidate_build_jobs, run_entries_with_batch_benchmarks, validate_candidate_auto_build_mode
-from .workflow import SEARCH_STRATEGY_PRESETS, apply_bruteforce_scheduler_search_defaults, apply_search_strategy_defaults, build_scheduler_bruteforce_plan, limit_shapes_and_reference, load_target_shapes_and_reference, workflow
+from .workflow import SEARCH_STRATEGY_PRESETS, apply_bruteforce_scheduler_search_defaults, apply_search_strategy_defaults, limit_shapes_and_reference, load_target_shapes_and_reference, workflow
 
 __all__ = [
     "BENCHMARK_ERROR_RE",
@@ -129,6 +130,8 @@ __all__ = [
     "SEARCH_RUNTIME_SCHEMA",
     "SEED_KERNELS",
     "STREAMK_TILE_SHAPES",
+    "SCHEDULER_BRUTEFORCE_CONFIG_FIELDS",
+    "REGULAR_GEMM_FULL_CONFIG_FIELDS",
     "apply_probe_results_to_profiles",
     "apply_run_probe_constraints",
     "apply_static_probe_constraints",
@@ -139,6 +142,8 @@ __all__ = [
     "build_candidate_build_manifest",
     "build_candidate_build_plan",
     "build_candidate_coverage_report",
+    "build_regular_gemm_gap_scan",
+    "build_scheduler_bruteforce_gap_scan",
     "benchmark_batch_plan_by_kernel_id",
     "benchmark_command_strings",
     "benchmark_exe_for_build_plan",
@@ -168,6 +173,8 @@ __all__ = [
     "candidate_id_for",
     "choose_candidates_for_shape",
     "collect_environment_metadata",
+    "collect_regular_gemm_full_config_rows",
+    "collect_scheduler_bruteforce_full_config_rows",
     "default_compiler_profiles",
     "default_constraints",
     "default_shapes",

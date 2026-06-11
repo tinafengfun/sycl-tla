@@ -63,6 +63,7 @@ WORKER_SYNC_FILES=(
   tools/intel_gemm_profiler/ali_dataset.py
   tools/intel_gemm_profiler/candidate_entries.py
   tools/intel_gemm_profiler/candidates.py
+  tools/intel_gemm_profiler/config.py
   tools/intel_gemm_profiler/catalog.py
   tools/intel_gemm_profiler/constraints.py
   tools/intel_gemm_profiler/device_target.py
@@ -85,6 +86,7 @@ WORKER_SYNC_FILES=(
   tools/intel_gemm_profiler/artifacts.py
   tools/intel_gemm_profiler/bundle.py
   tools/intel_gemm_profiler/build_plan.py
+  tools/intel_gemm_profiler/build_exec.py
   tools/intel_gemm_profiler/inputs.py
   tools/intel_gemm_profiler/README.md
   tools/intel_gemm_profiler/OPERATION_MANUAL.md

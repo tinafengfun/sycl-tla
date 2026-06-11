@@ -30,8 +30,6 @@ from .prefilter import (
     sort_candidates_by_priority,
 )
 from .constraints import (
-    DEFAULT_BUILD_CONFIG_PATH,
-    DEFAULT_RUNTIME_CONFIG_PATH,
     apply_probe_results_to_profiles,
     apply_run_probe_constraints,
     apply_static_probe_constraints,
@@ -39,11 +37,8 @@ from .constraints import (
     blocked_rule_for_row,
     default_compiler_profiles,
     default_constraints,
-    load_persisted_build_config,
-    load_persisted_runtime_config,
-    selected_compile_env,
-    selected_runtime_env,
 )
+from .config import DEFAULT_BUILD_CONFIG_PATH, DEFAULT_RUNTIME_CONFIG_PATH, list_compile_variants, list_runtime_variants, load_persisted_build_config, load_persisted_runtime_config, selected_compile_env, selected_runtime_env, update_build_config_variant, update_runtime_config_variant
 from .hw_specs import (
     DEFAULT_HW_REFERENCE_SPECS_PATH,
     compute_efficiency_bounds,
@@ -107,7 +102,8 @@ from .phase_a import build_compiler_flags_probe_summary, empty_anomaly_report, r
 from .phase_b import execute_phase_b, finalize_phase_b_outputs
 from .cli import build_parser, dispatch_lookup_from_args, main
 from .bundle import build_artifact_bundle_manifest, export_product_bundle_manifest, validate_product_bundle_manifest
-from .build_plan import benchmark_batch_plan_by_kernel_id, benchmark_command_strings, benchmark_exe_for_build_plan, benchmark_log_paths, build_candidate_build_plan, detect_available_vcpus, execute_candidate_build_plan, execute_candidate_build_preflight_plans, resolve_candidate_build_jobs, run_entries_with_batch_benchmarks, validate_candidate_auto_build_mode
+from .build_plan import benchmark_batch_plan_by_kernel_id, benchmark_command_strings, benchmark_exe_for_build_plan, benchmark_log_paths, build_candidate_build_plan, detect_available_vcpus, resolve_candidate_build_jobs, run_entries_with_batch_benchmarks
+from .build_exec import execute_candidate_build_plan, execute_candidate_build_preflight_plans, validate_candidate_auto_build_mode
 from .workflow import workflow
 
 __all__ = [
@@ -195,6 +191,8 @@ __all__ = [
     "kernel_catalog_entry",
     "is_valid_xe2_tile_sg",
     "load_compiled_kernel_list",
+    "list_compile_variants",
+    "list_runtime_variants",
     "load_dispatch_table",
     "load_persisted_kernel_catalog",
     "observed_bmg_template_space",
@@ -234,6 +232,8 @@ __all__ = [
     "parse_xpu_smi_json",
     "target_from_device_info",
     "timeout_rows",
+    "update_build_config_variant",
+    "update_runtime_config_variant",
     "validate_candidate_auto_build_mode",
     "validate_product_bundle_manifest",
     "validate_dispatch_table",

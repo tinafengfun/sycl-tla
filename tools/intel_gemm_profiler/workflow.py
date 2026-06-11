@@ -38,12 +38,10 @@ if __package__ in (None, ""):
         benchmark_log_paths,
         build_candidate_build_plan,
         detect_available_vcpus,
-        execute_candidate_build_plan,
-        execute_candidate_build_preflight_plans,
         resolve_candidate_build_jobs,
         run_entries_with_batch_benchmarks,
-        validate_candidate_auto_build_mode,
     )
+    from intel_gemm_profiler.build_exec import execute_candidate_build_plan, execute_candidate_build_preflight_plans, validate_candidate_auto_build_mode
     from intel_gemm_profiler.inputs import (
         SEARCH_STRATEGY_PRESETS,
         apply_bruteforce_scheduler_search_defaults,
@@ -92,12 +90,10 @@ else:
         benchmark_log_paths,
         build_candidate_build_plan,
         detect_available_vcpus,
-        execute_candidate_build_plan,
-        execute_candidate_build_preflight_plans,
         resolve_candidate_build_jobs,
         run_entries_with_batch_benchmarks,
-        validate_candidate_auto_build_mode,
     )
+    from .build_exec import execute_candidate_build_plan, execute_candidate_build_preflight_plans, validate_candidate_auto_build_mode
     from .inputs import (
         SEARCH_STRATEGY_PRESETS,
         apply_bruteforce_scheduler_search_defaults,

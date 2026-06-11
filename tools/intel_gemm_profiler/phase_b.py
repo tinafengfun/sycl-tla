@@ -7,10 +7,9 @@ from .build_plan import (
     benchmark_batch_plan_by_kernel_id,
     benchmark_command_strings,
     benchmark_log_paths,
-    execute_candidate_build_plan,
-    execute_candidate_build_preflight_plans,
     run_entries_with_batch_benchmarks,
 )
+from .build_exec import execute_candidate_build_plan, execute_candidate_build_preflight_plans
 from .bundle import build_artifact_bundle_manifest
 from .candidate_entries import build_screening_entries, generate_confirmation_entries
 from .runner import run_entries_with_benchmark, run_entries_with_streamk_example

@@ -5,10 +5,12 @@
 
 import statistics
 
-from .candidates import (
+from .candidate_entries import (
     build_compiler_profile_probe_entries,
     build_dpas_probe_entry,
     build_phase_a_probe_entries,
+)
+from .candidates import (
     generate_candidate_space,
 )
 from .constraints import (

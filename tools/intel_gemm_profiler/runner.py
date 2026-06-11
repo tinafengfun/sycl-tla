@@ -20,7 +20,7 @@ from .schemas import (
     infer_scheduler_metadata,
 )
 from .utils import now_iso, resolve_executable, shell_join, write_json
-from .candidates import write_config
+from .candidate_entries import write_config
 
 
 def collect_environment_metadata(shell_init, benchmark_exe, streamk_example_exe, cwd=None):

@@ -12,7 +12,7 @@ from .build_plan import (
     run_entries_with_batch_benchmarks,
 )
 from .bundle import build_artifact_bundle_manifest
-from .candidates import build_screening_entries, generate_confirmation_entries
+from .candidate_entries import build_screening_entries, generate_confirmation_entries
 from .runner import run_entries_with_benchmark, run_entries_with_streamk_example
 from .selector import (
     build_dispatch_table,

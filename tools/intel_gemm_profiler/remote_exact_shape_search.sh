@@ -61,6 +61,7 @@ WORKER_SYNC_FILES=(
   test/benchmarks/intel_gemm_profiler/__init__.py
   tools/intel_gemm_profiler/__init__.py
   tools/intel_gemm_profiler/ali_dataset.py
+  tools/intel_gemm_profiler/candidate_entries.py
   tools/intel_gemm_profiler/candidates.py
   tools/intel_gemm_profiler/catalog.py
   tools/intel_gemm_profiler/constraints.py

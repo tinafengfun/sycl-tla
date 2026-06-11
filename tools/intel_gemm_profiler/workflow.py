@@ -13,28 +13,20 @@ if __package__ in (None, ""):
     PACKAGE_ROOT = Path(__file__).resolve().parents[1]
     if str(PACKAGE_ROOT) not in sys.path:
         sys.path.insert(0, str(PACKAGE_ROOT))
-    from intel_gemm_profiler.catalog import SEED_KERNELS, build_kernel_catalog
+    from intel_gemm_profiler.catalog import build_kernel_catalog
     from intel_gemm_profiler.candidates import (
         build_candidate_build_manifest,
-        build_compiler_profile_probe_entries,
-        build_dpas_probe_entry,
-        build_phase_a_probe_entries,
         build_screening_entries,
-        default_shapes,
-        dry_run_shapes,
         generate_candidate_space,
         generate_confirmation_entries,
     )
     from intel_gemm_profiler.constraints import (
         apply_probe_results_to_profiles,
-        apply_run_probe_constraints,
-        apply_static_probe_constraints,
         default_compiler_profiles,
         default_constraints,
         selected_compile_env,
         selected_runtime_env,
     )
-    from intel_gemm_profiler.ali_dataset import build_ali_gemm_docs
     from intel_gemm_profiler.analysis import (
         REGULAR_GEMM_FULL_CONFIG_FIELDS,
         SCHEDULER_BRUTEFORCE_CONFIG_FIELDS,
@@ -61,42 +53,41 @@ if __package__ in (None, ""):
         run_entries_with_batch_benchmarks,
         validate_candidate_auto_build_mode,
     )
+    from intel_gemm_profiler.inputs import (
+        SEARCH_STRATEGY_PRESETS,
+        apply_bruteforce_scheduler_search_defaults,
+        apply_search_strategy_defaults,
+        filter_candidate_space_by_compiled_kernels,
+        limit_shapes_and_reference,
+        load_compiled_kernel_list,
+        load_target_shapes_and_reference,
+    )
     from intel_gemm_profiler.dispatch import DISPATCH_KEY_FIELDS, load_dispatch_table, lookup_dispatch_entry
     from intel_gemm_profiler.device_target import resolve_profiles_device_target
     from intel_gemm_profiler.hw_specs import resolve_hw_reference_spec
     from intel_gemm_profiler.phase_a import (
-        build_compiler_flags_probe_summary,
         empty_anomaly_report,
         run_phase_a_probe,
     )
     from intel_gemm_profiler.runner import collect_environment_metadata, run_entries_with_benchmark, run_entries_with_streamk_example
     from intel_gemm_profiler.selector import build_candidate_coverage_report, build_dispatch_table, build_phase_a_summary, build_phase_b_summary, build_reference_comparison, build_run_summary, write_results_csv
-    from intel_gemm_profiler.source_templates import is_valid_xe2_tile_sg
-    from intel_gemm_profiler.utils import ensure_dir, now_iso, read_json, resolve_executable, shell_init_with_env, shell_join, write_json
-    from intel_gemm_profiler.schemas import SCHEMA_VERSION, SEARCH_RUNTIME_SCHEMA
+    from intel_gemm_profiler.utils import ensure_dir, read_json, shell_init_with_env, write_json
+    from intel_gemm_profiler.schemas import SEARCH_RUNTIME_SCHEMA
 else:
-    from .catalog import SEED_KERNELS, build_kernel_catalog
+    from .catalog import build_kernel_catalog
     from .candidates import (
         build_candidate_build_manifest,
-        build_compiler_profile_probe_entries,
-        build_dpas_probe_entry,
-        build_phase_a_probe_entries,
         build_screening_entries,
-        default_shapes,
-        dry_run_shapes,
         generate_candidate_space,
         generate_confirmation_entries,
     )
     from .constraints import (
         apply_probe_results_to_profiles,
-        apply_run_probe_constraints,
-        apply_static_probe_constraints,
         default_compiler_profiles,
         default_constraints,
         selected_compile_env,
         selected_runtime_env,
     )
-    from .ali_dataset import build_ali_gemm_docs
     from .analysis import (
         REGULAR_GEMM_FULL_CONFIG_FIELDS,
         SCHEDULER_BRUTEFORCE_CONFIG_FIELDS,
@@ -123,148 +114,26 @@ else:
         run_entries_with_batch_benchmarks,
         validate_candidate_auto_build_mode,
     )
+    from .inputs import (
+        SEARCH_STRATEGY_PRESETS,
+        apply_bruteforce_scheduler_search_defaults,
+        apply_search_strategy_defaults,
+        filter_candidate_space_by_compiled_kernels,
+        limit_shapes_and_reference,
+        load_compiled_kernel_list,
+        load_target_shapes_and_reference,
+    )
     from .dispatch import DISPATCH_KEY_FIELDS, load_dispatch_table, lookup_dispatch_entry
     from .device_target import resolve_profiles_device_target
     from .hw_specs import resolve_hw_reference_spec
     from .phase_a import (
-        build_compiler_flags_probe_summary,
         empty_anomaly_report,
         run_phase_a_probe,
     )
     from .runner import collect_environment_metadata, run_entries_with_benchmark, run_entries_with_streamk_example
     from .selector import build_candidate_coverage_report, build_dispatch_table, build_phase_a_summary, build_phase_b_summary, build_reference_comparison, build_run_summary, write_results_csv
-    from .utils import ensure_dir, now_iso, read_json, resolve_executable, shell_init_with_env, shell_join, write_json
-    from .schemas import SCHEMA_VERSION, SEARCH_RUNTIME_SCHEMA
-
-
-def load_compiled_kernel_list(path):
-    if not path:
-        return None
-    kernels = []
-    for line in Path(path).read_text(encoding="utf-8").splitlines():
-        item = line.strip()
-        if not item or item.startswith("#"):
-            continue
-        if item.startswith("^") and item.endswith("$"):
-            item = item[1:-1]
-        kernels.append(item)
-    return kernels
-
-
-def filter_candidate_space_by_compiled_kernels(candidate_space, compiled_kernels):
-    if compiled_kernels is None:
-        return candidate_space
-    compiled = set(compiled_kernels)
-    filtered = copy.deepcopy(candidate_space)
-    filtered["candidates"] = [
-        candidate for candidate in candidate_space["candidates"]
-        if candidate.get("runner", "benchmark") != "benchmark" or candidate["kernel_id"] in compiled
-    ]
-    filtered["compiled_kernel_filter"] = {
-        "source": "compiled_kernel_list",
-        "kernel_count": len(compiled),
-        "matched_candidate_count": len(filtered["candidates"]),
-    }
-    if candidate_space["candidates"] and not filtered["candidates"]:
-        raise ValueError("Compiled kernel list does not match any generated benchmark candidates.")
-    return filtered
-
-
-SEARCH_STRATEGY_PRESETS = {
-    "manual": {},
-    "baseline": {
-        "kernel_catalog_source": "persisted",
-        "prefilter": "none",
-        "run_candidate_build_preflight": False,
-        "use_candidate_build_preflight_benchmarks": False,
-    },
-    "expanded_bmg": {
-        "kernel_catalog_source": "expanded_bmg",
-        "prefilter": "none",
-        "run_candidate_build_preflight": False,
-        "use_candidate_build_preflight_benchmarks": False,
-    },
-    "layered_exhaustive": {
-        "kernel_catalog_source": "layered_bmg",
-        "prefilter": "none",
-        "run_candidate_build_preflight": False,
-        "use_candidate_build_preflight_benchmarks": False,
-    },
-    "bruteforce_scheduler": {
-        "kernel_catalog_source": "layered_bmg_scheduler_expanded",
-        "prefilter": "none",
-        "run_candidate_build_preflight": True,
-        "use_candidate_build_preflight_benchmarks": True,
-    },
-}
-
-
-def apply_search_strategy_defaults(args):
-    strategy = getattr(args, "search_strategy", "manual") or "manual"
-    if getattr(args, "bruteforce_scheduler_search", False) and strategy == "manual":
-        strategy = "bruteforce_scheduler"
-    preset = SEARCH_STRATEGY_PRESETS.get(strategy, {})
-    if preset:
-        args.kernel_catalog_source = preset["kernel_catalog_source"]
-        args.prefilter = preset["prefilter"]
-        args.run_candidate_build_preflight = preset["run_candidate_build_preflight"]
-        args.use_candidate_build_preflight_benchmarks = preset["use_candidate_build_preflight_benchmarks"]
-    if strategy == "bruteforce_scheduler" and getattr(args, "candidate_build_batch_size", 0) <= 0:
-        args.candidate_build_batch_size = 1
-    if strategy == "bruteforce_scheduler" and (getattr(args, "skip_run", False) or getattr(args, "dry_run", False)):
-        args.run_candidate_build_preflight = False
-        args.use_candidate_build_preflight_benchmarks = False
-    args.search_strategy = strategy
-    return args
-
-
-def apply_bruteforce_scheduler_search_defaults(args):
-    args.bruteforce_scheduler_search = True
-    return apply_search_strategy_defaults(args)
-
-
-def load_target_shapes_and_reference(args, dry_run_mode):
-    if args.ali_workbook:
-        if args.shapes_json:
-            raise ValueError("--ali-workbook and --shapes-json are mutually exclusive.")
-        if args.reference_json:
-            raise ValueError("--ali-workbook and --reference-json are mutually exclusive.")
-        shapes_doc, reference_doc = build_ali_gemm_docs(args.ali_workbook)
-        return limit_shapes_and_reference(shapes_doc, reference_doc, args.max_shapes)
-    shapes_doc = read_json(args.shapes_json) if args.shapes_json else (dry_run_shapes(args.dtype) if dry_run_mode else default_shapes(args.dtype))
-    reference_doc = read_json(args.reference_json) if args.reference_json else None
-    return limit_shapes_and_reference(shapes_doc, reference_doc, args.max_shapes)
-
-
-def limit_shapes_and_reference(shapes_doc, reference_doc=None, max_shapes=0):
-    if max_shapes is None or max_shapes == 0:
-        return shapes_doc, reference_doc
-    if max_shapes < 0:
-        raise ValueError("--max-shapes must be non-negative.")
-    limited_shapes_doc = copy.deepcopy(shapes_doc)
-    selected_shapes = limited_shapes_doc.get("shapes", [])[:max_shapes]
-    limited_shapes_doc["shapes"] = selected_shapes
-    limited_shapes_doc["shape_limit"] = max_shapes
-    limited_shapes_doc["unlimited_shape_count"] = len(shapes_doc.get("shapes", []))
-    if reference_doc is None:
-        return limited_shapes_doc, None
-    selected_shape_ids = {shape["shape_id"] for shape in selected_shapes}
-    selected_shape_keys = {
-        (shape.get("dtype_a"), shape.get("m"), shape.get("n"), shape.get("k"))
-        for shape in selected_shapes
-    }
-    limited_reference_doc = copy.deepcopy(reference_doc)
-    limited_reference_doc["entries"] = [
-        entry for entry in limited_reference_doc.get("entries", [])
-        if entry.get("shape_id") in selected_shape_ids
-    ]
-    limited_reference_doc["skipped_entries"] = [
-        entry for entry in limited_reference_doc.get("skipped_entries", [])
-        if (entry.get("dtype"), entry.get("m"), entry.get("n"), entry.get("k")) in selected_shape_keys
-    ]
-    limited_reference_doc["shape_limit"] = max_shapes
-    limited_reference_doc["unlimited_reference_entries"] = len(reference_doc.get("entries", []))
-    return limited_shapes_doc, limited_reference_doc
+    from .utils import ensure_dir, read_json, shell_init_with_env, write_json
+    from .schemas import SEARCH_RUNTIME_SCHEMA
 
 
 def workflow(args):

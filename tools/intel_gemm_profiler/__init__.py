@@ -108,11 +108,12 @@ from .dispatch import (
 )
 from .ali_dataset import build_ali_gemm_docs
 from .analysis import REGULAR_GEMM_FULL_CONFIG_FIELDS, SCHEDULER_BRUTEFORCE_CONFIG_FIELDS, build_regular_gemm_gap_scan, build_scheduler_bruteforce_gap_scan, build_scheduler_bruteforce_plan, collect_regular_gemm_full_config_rows, collect_scheduler_bruteforce_full_config_rows
+from .inputs import SEARCH_STRATEGY_PRESETS, apply_bruteforce_scheduler_search_defaults, apply_search_strategy_defaults, filter_candidate_space_by_compiled_kernels, limit_shapes_and_reference, load_compiled_kernel_list, load_target_shapes_and_reference
 from .phase_a import build_compiler_flags_probe_summary, empty_anomaly_report, run_phase_a_probe
 from .cli import build_parser, dispatch_lookup_from_args, main
 from .bundle import build_artifact_bundle_manifest, export_product_bundle_manifest, validate_product_bundle_manifest
 from .build_plan import benchmark_batch_plan_by_kernel_id, benchmark_command_strings, benchmark_exe_for_build_plan, benchmark_log_paths, build_candidate_build_plan, detect_available_vcpus, execute_candidate_build_plan, execute_candidate_build_preflight_plans, resolve_candidate_build_jobs, run_entries_with_batch_benchmarks, validate_candidate_auto_build_mode
-from .workflow import SEARCH_STRATEGY_PRESETS, apply_bruteforce_scheduler_search_defaults, apply_search_strategy_defaults, limit_shapes_and_reference, load_target_shapes_and_reference, workflow
+from .workflow import workflow
 
 __all__ = [
     "BENCHMARK_ERROR_RE",
@@ -184,6 +185,7 @@ __all__ = [
     "execute_candidate_build_preflight_plans",
     "export_product_bundle_manifest",
     "ensure_dir",
+    "filter_candidate_space_by_compiled_kernels",
     "infer_scheduler_metadata",
     "generate_candidate_space",
     "generated_generator_kernel_catalog",
@@ -195,6 +197,7 @@ __all__ = [
     "ilp_class",
     "kernel_catalog_entry",
     "is_valid_xe2_tile_sg",
+    "load_compiled_kernel_list",
     "load_dispatch_table",
     "load_persisted_kernel_catalog",
     "observed_bmg_template_space",

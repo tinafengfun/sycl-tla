@@ -58,6 +58,7 @@ SYNC_FILES = [
     "tools/intel_gemm_profiler/analysis.py",
     "tools/intel_gemm_profiler/bundle.py",
     "tools/intel_gemm_profiler/build_plan.py",
+    "tools/intel_gemm_profiler/inputs.py",
     "tools/intel_gemm_profiler/README.md",
     "tools/intel_gemm_profiler/OPERATION_MANUAL.md",
     "tools/intel_gemm_profiler/gen_main.py",

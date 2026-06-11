@@ -51,6 +51,7 @@ SYNC_FILES = [
     "tools/intel_gemm_profiler/phase_a.py",
     "tools/intel_gemm_profiler/runner.py",
     "tools/intel_gemm_profiler/runner_benchmark.py",
+    "tools/intel_gemm_profiler/runner_benchmark_parse.py",
     "tools/intel_gemm_profiler/schemas.py",
     "tools/intel_gemm_profiler/selector.py",
     "tools/intel_gemm_profiler/source_templates.py",

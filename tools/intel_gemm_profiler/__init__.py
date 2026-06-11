@@ -62,7 +62,8 @@ from .runner import (
     run_entries_with_benchmark,
     run_entries_with_streamk_example,
 )
-from .runner_benchmark import parse_benchmark_log, parse_metric, run_benchmark, timeout_rows
+from .runner_benchmark import run_benchmark
+from .runner_benchmark_parse import parse_benchmark_log, parse_metric, timeout_rows
 from .selector import (
     build_dispatch_table,
     build_candidate_coverage_report,

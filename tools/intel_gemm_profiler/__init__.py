@@ -56,7 +56,6 @@ from .device_target import (
     target_from_device_info,
 )
 from .candidates import (
-    build_candidate_build_manifest,
     candidate_class,
     candidate_id_for,
     default_shapes,
@@ -65,6 +64,7 @@ from .candidates import (
     select_compiler_profile_id,
 )
 from .candidate_entries import build_compiler_profile_probe_entries, build_dpas_probe_entry, build_phase_a_probe_entries, build_screening_entries, choose_candidates_for_shape, generate_confirmation_entries, select_probe_shape, write_config
+from .candidate_manifest import build_candidate_build_manifest, build_selected_kernel_batches
 from .runner import (
     collect_environment_metadata,
     parse_streamk_example_log,

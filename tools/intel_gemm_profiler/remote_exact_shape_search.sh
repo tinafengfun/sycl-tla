@@ -62,6 +62,7 @@ WORKER_SYNC_FILES=(
   tools/intel_gemm_profiler/__init__.py
   tools/intel_gemm_profiler/ali_dataset.py
   tools/intel_gemm_profiler/candidate_entries.py
+  tools/intel_gemm_profiler/candidate_manifest.py
   tools/intel_gemm_profiler/candidates.py
   tools/intel_gemm_profiler/config.py
   tools/intel_gemm_profiler/catalog.py

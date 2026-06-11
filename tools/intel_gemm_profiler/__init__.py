@@ -67,14 +67,11 @@ from .candidates import (
 from .candidate_entries import build_compiler_profile_probe_entries, build_dpas_probe_entry, build_phase_a_probe_entries, build_screening_entries, choose_candidates_for_shape, generate_confirmation_entries, select_probe_shape, write_config
 from .runner import (
     collect_environment_metadata,
-    parse_benchmark_log,
-    parse_metric,
     parse_streamk_example_log,
-    run_benchmark,
     run_entries_with_benchmark,
     run_entries_with_streamk_example,
-    timeout_rows,
 )
+from .runner_benchmark import parse_benchmark_log, parse_metric, run_benchmark, timeout_rows
 from .selector import (
     build_dispatch_table,
     build_candidate_coverage_report,

@@ -108,6 +108,7 @@ from .dispatch import (
 )
 from .ali_dataset import build_ali_gemm_docs
 from .analysis import REGULAR_GEMM_FULL_CONFIG_FIELDS, SCHEDULER_BRUTEFORCE_CONFIG_FIELDS, build_regular_gemm_gap_scan, build_scheduler_bruteforce_gap_scan, build_scheduler_bruteforce_plan, collect_regular_gemm_full_config_rows, collect_scheduler_bruteforce_full_config_rows
+from .artifacts import prepare_candidate_artifacts
 from .inputs import SEARCH_STRATEGY_PRESETS, apply_bruteforce_scheduler_search_defaults, apply_search_strategy_defaults, filter_candidate_space_by_compiled_kernels, limit_shapes_and_reference, load_compiled_kernel_list, load_target_shapes_and_reference
 from .phase_a import build_compiler_flags_probe_summary, empty_anomaly_report, run_phase_a_probe
 from .cli import build_parser, dispatch_lookup_from_args, main
@@ -214,6 +215,7 @@ __all__ = [
     "parse_benchmark_log",
     "parse_metric",
     "parse_streamk_example_log",
+    "prepare_candidate_artifacts",
     "read_json",
     "resolve_executable",
     "resolve_hw_reference_spec",

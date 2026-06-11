@@ -4,7 +4,6 @@
 #################################################################################################
 
 import copy
-import csv
 import json
 import sys
 from pathlib import Path
@@ -27,15 +26,7 @@ if __package__ in (None, ""):
         selected_compile_env,
         selected_runtime_env,
     )
-    from intel_gemm_profiler.analysis import (
-        REGULAR_GEMM_FULL_CONFIG_FIELDS,
-        SCHEDULER_BRUTEFORCE_CONFIG_FIELDS,
-        build_regular_gemm_gap_scan,
-        build_scheduler_bruteforce_gap_scan,
-        build_scheduler_bruteforce_plan,
-        collect_regular_gemm_full_config_rows,
-        collect_scheduler_bruteforce_full_config_rows,
-    )
+    from intel_gemm_profiler.artifacts import prepare_candidate_artifacts
     from intel_gemm_profiler.bundle import (
         build_artifact_bundle_manifest,
         export_product_bundle_manifest,
@@ -88,15 +79,7 @@ else:
         selected_compile_env,
         selected_runtime_env,
     )
-    from .analysis import (
-        REGULAR_GEMM_FULL_CONFIG_FIELDS,
-        SCHEDULER_BRUTEFORCE_CONFIG_FIELDS,
-        build_regular_gemm_gap_scan,
-        build_scheduler_bruteforce_gap_scan,
-        build_scheduler_bruteforce_plan,
-        collect_regular_gemm_full_config_rows,
-        collect_scheduler_bruteforce_full_config_rows,
-    )
+    from .artifacts import prepare_candidate_artifacts
     from .bundle import (
         build_artifact_bundle_manifest,
         export_product_bundle_manifest,
@@ -244,80 +227,20 @@ def workflow(args):
     write_json(reports_dir / "bmg_safe_candidates.json", candidate_space)
     candidate_coverage_report_path = reports_dir / "candidate_coverage_report.json"
     write_json(candidate_coverage_report_path, build_candidate_coverage_report(candidate_space))
-    build_manifest = build_candidate_build_manifest(
+    artifact_paths = prepare_candidate_artifacts(
+        args,
+        workspace,
+        reports_dir,
         candidate_space,
-        selected_kernel_batch_size=args.candidate_build_batch_size,
-        build_config=profiles.get("build_config", {}),
-    )
-    selected_kernel_list_path = reports_dir / "selected_kernel_list.txt"
-    selected_kernel_filter_path = reports_dir / "selected_kernel_filter.list"
-    candidate_build_cmake_config_path = reports_dir / "candidate_build_cmake_config.json"
-    candidate_build_plan_path = reports_dir / "candidate_build_plan.json"
-    selected_kernel_list_path.write_text("\n".join(build_manifest["selected_kernel_list"]) + "\n", encoding="utf-8")
-    selected_kernel_filter_path.write_text("\n".join(build_manifest["kernel_filter_file"]["lines"]) + "\n", encoding="utf-8")
-    for batch in build_manifest.get("selected_kernel_batches", []):
-        batch_filter_path = reports_dir / f"selected_kernel_filter_part{batch['batch_index']:03d}.list"
-        batch_filter_path.write_text("\n".join(batch["kernel_filter_file"]["lines"]) + "\n", encoding="utf-8")
-        batch["kernel_filter_path"] = str(batch_filter_path)
-    write_json(reports_dir / "candidate_build_manifest.json", build_manifest)
-    write_json(candidate_build_cmake_config_path, build_manifest["cmake_config"])
-    source_dir = Path(args.cmake_source_dir).resolve() if args.cmake_source_dir else (Path(args.cwd).resolve() if args.cwd else Path.cwd().resolve())
-    build_dir = Path(args.benchmark_build_dir).resolve() if args.benchmark_build_dir else workspace / "build" / "candidate_benchmarks"
-    googlebenchmark_dir = Path(args.googlebenchmark_dir).resolve() if args.googlebenchmark_dir else None
-    googlebenchmark_build_dir = (
-        Path(args.googlebenchmark_build_dir).resolve() if args.googlebenchmark_build_dir else None
-    )
-    detected_vcpus = detect_available_vcpus()
-    candidate_build_workers = max(1, int(getattr(args, "candidate_build_parallelism", 1) or 1))
-    aggregate_build_parallelism = detected_vcpus
-    batch_build_parallelism = resolve_candidate_build_jobs(candidate_build_workers, total_vcpus=detected_vcpus)
-    candidate_build_plan = build_candidate_build_plan(
-        build_manifest,
-        source_dir,
-        build_dir,
-        selected_kernel_filter_path,
-        googlebenchmark_dir,
-        googlebenchmark_build_dir,
-        args.cmake_cxx_compiler,
-        build_parallelism=aggregate_build_parallelism,
-        batch_build_parallelism=batch_build_parallelism,
-    )
-    write_json(candidate_build_plan_path, candidate_build_plan)
-    regular_gemm_full_config_path = reports_dir / "regular_gemm_full_config.csv"
-    regular_gemm_gap_scan_path = reports_dir / "regular_gemm_gap_scan.json"
-    regular_full_config_rows, regular_duplicate_rows = collect_regular_gemm_full_config_rows(candidate_space)
-    with open(regular_gemm_full_config_path, "w", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(handle, fieldnames=REGULAR_GEMM_FULL_CONFIG_FIELDS)
-        writer.writeheader()
-        writer.writerows(regular_full_config_rows)
-    regular_gap_scan = build_regular_gemm_gap_scan(
-        regular_full_config_rows,
+        profiles,
         constraints,
-        duplicate_rows=regular_duplicate_rows,
+        build_plan_fn=build_candidate_build_plan,
+        detect_vcpus_fn=detect_available_vcpus,
+        resolve_jobs_fn=resolve_candidate_build_jobs,
     )
-    write_json(regular_gemm_gap_scan_path, regular_gap_scan)
-    scheduler_bruteforce_full_config_path = reports_dir / "scheduler_bruteforce_full_config.csv"
-    scheduler_bruteforce_gap_scan_path = reports_dir / "scheduler_bruteforce_gap_scan.json"
-    scheduler_full_config_rows, scheduler_duplicate_rows = collect_scheduler_bruteforce_full_config_rows(candidate_space)
-    with open(scheduler_bruteforce_full_config_path, "w", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(handle, fieldnames=SCHEDULER_BRUTEFORCE_CONFIG_FIELDS)
-        writer.writeheader()
-        writer.writerows(scheduler_full_config_rows)
-    scheduler_gap_scan = build_scheduler_bruteforce_gap_scan(
-        scheduler_full_config_rows,
-        duplicate_rows=scheduler_duplicate_rows,
-    )
-    write_json(scheduler_bruteforce_gap_scan_path, scheduler_gap_scan)
-    scheduler_bruteforce_plan_path = reports_dir / "scheduler_bruteforce_plan.json"
-    write_json(
-        scheduler_bruteforce_plan_path,
-        build_scheduler_bruteforce_plan(
-            candidate_space,
-            args,
-            build_manifest=build_manifest,
-            candidate_build_plan=candidate_build_plan,
-        ),
-    )
+    build_manifest = artifact_paths["build_manifest"]
+    candidate_build_plan = artifact_paths["candidate_build_plan"]
+    candidate_build_workers = artifact_paths["candidate_build_workers"]
     candidate_build_summary_path = reports_dir / "candidate_build_summary.json"
     candidate_build_preflight_summary_path = reports_dir / "candidate_build_preflight_summary.json"
     candidate_build_summary = {"status": "not_run", "reason": "build_candidate_benchmark disabled"}
@@ -446,18 +369,18 @@ def workflow(args):
         "kernel_catalog": str(reports_dir / "kernel_catalog.json"),
         "candidate_space": str(reports_dir / "gemm_candidate_space.json"),
         "candidate_coverage_report": str(candidate_coverage_report_path),
-        "build_manifest": str(reports_dir / "candidate_build_manifest.json"),
-        "selected_kernel_list": str(selected_kernel_list_path),
-        "selected_kernel_filter": str(selected_kernel_filter_path),
-        "candidate_build_cmake_config": str(candidate_build_cmake_config_path),
-        "candidate_build_plan": str(candidate_build_plan_path),
+        "build_manifest": str(artifact_paths["build_manifest_path"]),
+        "selected_kernel_list": str(artifact_paths["selected_kernel_list_path"]),
+        "selected_kernel_filter": str(artifact_paths["selected_kernel_filter_path"]),
+        "candidate_build_cmake_config": str(artifact_paths["candidate_build_cmake_config_path"]),
+        "candidate_build_plan": str(artifact_paths["candidate_build_plan_path"]),
         "candidate_build_summary": str(candidate_build_summary_path),
         "candidate_build_preflight_summary": str(candidate_build_preflight_summary_path),
-        "scheduler_bruteforce_plan": str(scheduler_bruteforce_plan_path),
-        "regular_gemm_full_config": str(regular_gemm_full_config_path),
-        "regular_gemm_gap_scan": str(regular_gemm_gap_scan_path),
-        "scheduler_bruteforce_full_config": str(scheduler_bruteforce_full_config_path),
-        "scheduler_bruteforce_gap_scan": str(scheduler_bruteforce_gap_scan_path),
+        "scheduler_bruteforce_plan": str(artifact_paths["scheduler_bruteforce_plan_path"]),
+        "regular_gemm_full_config": str(artifact_paths["regular_gemm_full_config_path"]),
+        "regular_gemm_gap_scan": str(artifact_paths["regular_gemm_gap_scan_path"]),
+        "scheduler_bruteforce_full_config": str(artifact_paths["scheduler_bruteforce_full_config_path"]),
+        "scheduler_bruteforce_gap_scan": str(artifact_paths["scheduler_bruteforce_gap_scan_path"]),
         "device_target_detection": str(device_target_detection_path),
         "safe_candidates": str(reports_dir / "bmg_safe_candidates.json"),
         "verified_hw_caps": str(verified_hw_caps_path),

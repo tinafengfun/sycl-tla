@@ -43,6 +43,7 @@ SYNC_FILES = [
     "tools/intel_gemm_profiler/config.py",
     "tools/intel_gemm_profiler/catalog.py",
     "tools/intel_gemm_profiler/constraints.py",
+    "tools/intel_gemm_profiler/constraints_probe.py",
     "tools/intel_gemm_profiler/device_target.py",
     "tools/intel_gemm_profiler/dispatch.py",
     "tools/intel_gemm_profiler/hw_specs.py",

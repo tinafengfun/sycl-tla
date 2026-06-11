@@ -30,14 +30,11 @@ from .prefilter import (
     sort_candidates_by_priority,
 )
 from .constraints import (
-    apply_probe_results_to_profiles,
-    apply_run_probe_constraints,
-    apply_static_probe_constraints,
     blocked,
-    blocked_rule_for_row,
     default_compiler_profiles,
     default_constraints,
 )
+from .constraints_probe import apply_probe_results_to_profiles, apply_run_probe_constraints, apply_static_probe_constraints, blocked_rule_for_row
 from .config import DEFAULT_BUILD_CONFIG_PATH, DEFAULT_RUNTIME_CONFIG_PATH, list_compile_variants, list_runtime_variants, load_persisted_build_config, load_persisted_runtime_config, selected_compile_env, selected_runtime_env, update_build_config_variant, update_runtime_config_variant
 from .hw_specs import (
     DEFAULT_HW_REFERENCE_SPECS_PATH,

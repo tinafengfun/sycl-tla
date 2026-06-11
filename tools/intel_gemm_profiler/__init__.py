@@ -111,6 +111,7 @@ from .analysis import REGULAR_GEMM_FULL_CONFIG_FIELDS, SCHEDULER_BRUTEFORCE_CONF
 from .artifacts import prepare_candidate_artifacts
 from .inputs import SEARCH_STRATEGY_PRESETS, apply_bruteforce_scheduler_search_defaults, apply_search_strategy_defaults, filter_candidate_space_by_compiled_kernels, limit_shapes_and_reference, load_compiled_kernel_list, load_target_shapes_and_reference
 from .phase_a import build_compiler_flags_probe_summary, empty_anomaly_report, run_phase_a_probe
+from .phase_b import execute_phase_b, finalize_phase_b_outputs
 from .cli import build_parser, dispatch_lookup_from_args, main
 from .bundle import build_artifact_bundle_manifest, export_product_bundle_manifest, validate_product_bundle_manifest
 from .build_plan import benchmark_batch_plan_by_kernel_id, benchmark_command_strings, benchmark_exe_for_build_plan, benchmark_log_paths, build_candidate_build_plan, detect_available_vcpus, execute_candidate_build_plan, execute_candidate_build_preflight_plans, resolve_candidate_build_jobs, run_entries_with_batch_benchmarks, validate_candidate_auto_build_mode
@@ -182,11 +183,13 @@ __all__ = [
     "default_shapes",
     "dry_run_shapes",
     "empty_anomaly_report",
+    "execute_phase_b",
     "execute_candidate_build_plan",
     "execute_candidate_build_preflight_plans",
     "export_product_bundle_manifest",
     "ensure_dir",
     "filter_candidate_space_by_compiled_kernels",
+    "finalize_phase_b_outputs",
     "infer_scheduler_metadata",
     "generate_candidate_space",
     "generated_generator_kernel_catalog",

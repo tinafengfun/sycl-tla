@@ -87,6 +87,7 @@ WORKER_SYNC_FILES=(
   tools/intel_gemm_profiler/inputs.py
   tools/intel_gemm_profiler/README.md
   tools/intel_gemm_profiler/OPERATION_MANUAL.md
+  tools/intel_gemm_profiler/phase_b.py
   tools/intel_gemm_profiler/gen_main.py
   tools/intel_gemm_profiler/gen_mini_hpp.py
   tools/intel_gemm_profiler/exact_shape_search_report.py

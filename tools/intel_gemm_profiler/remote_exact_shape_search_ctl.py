@@ -62,6 +62,7 @@ SYNC_FILES = [
     "tools/intel_gemm_profiler/intel_gemm_kernel_catalog_level0.json",
     "tools/intel_gemm_profiler/intel_gemm_hw_reference_specs.json",
     "tools/intel_gemm_profiler/analysis.py",
+    "tools/intel_gemm_profiler/analysis_gap.py",
     "tools/intel_gemm_profiler/artifacts.py",
     "tools/intel_gemm_profiler/bundle.py",
     "tools/intel_gemm_profiler/build_plan.py",

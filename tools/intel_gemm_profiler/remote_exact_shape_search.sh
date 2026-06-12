@@ -106,6 +106,8 @@ WORKER_SYNC_FILES=(
   tools/intel_gemm_profiler/gen_mini_hpp.py
   tools/intel_gemm_profiler/exact_shape_search_report.py
   tools/intel_gemm_profiler/exact_shape_search_report_artifacts.py
+  tools/intel_gemm_profiler/exact_shape_search_report_export.py
+  tools/intel_gemm_profiler/exact_shape_search_report_repro.py
   tools/intel_gemm_profiler/remote_exact_shape_search.sh
   tools/intel_gemm_profiler/remote_exact_shape_search_status.sh
   tools/intel_gemm_profiler/remote_exact_shape_search_stop.sh

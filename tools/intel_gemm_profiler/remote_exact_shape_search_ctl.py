@@ -5,167 +5,39 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import posixpath
-import shlex
 import sys
-from dataclasses import dataclass
-from datetime import datetime
-from pathlib import Path
 
-try:
-    import paramiko
-except ImportError as exc:  # pragma: no cover - runtime environment dependent
-    raise SystemExit("paramiko is required for remote_exact_shape_search_ctl.py") from exc
+if __package__ in (None, ""):
+    from pathlib import Path
 
+    PACKAGE_ROOT = Path(__file__).resolve().parents[1]
+    if str(PACKAGE_ROOT) not in sys.path:
+        sys.path.insert(0, str(PACKAGE_ROOT))
+    __package__ = "intel_gemm_profiler"
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_REMOTE_ROOT = "/root/cutlass_profile_device7_b70_2500mhz"
-DEFAULT_REMOTE_REPO = f"{DEFAULT_REMOTE_ROOT}/sycl-tla"
-DEFAULT_RUNS_DIR = f"{DEFAULT_REMOTE_ROOT}/screen_runs"
-SYNC_FILES = [
-    "benchmarks/common.hpp",
-    "benchmarks/gemm/CMakeLists.txt",
-    "benchmarks/gemm/benchmark_runner.hpp",
-    "benchmarks/gemm/benchmarks_sycl.hpp",
-    "tools/util/include/cutlass/util/sycl_event_manager.hpp",
-    "benchmarks/gemm/bmg_streamk_seed_tile.def",
-    "benchmarks/gemm/bmg_streamk_expanded_tile.def",
-    "benchmarks/gemm/bmg_streamk_exhaustive_missing_tile.def",
-    "test/benchmarks/intel_gemm_profiler.py",
-    "test/benchmarks/intel_gemm_profiler/__init__.py",
-    "tools/intel_gemm_profiler/__init__.py",
-    "tools/intel_gemm_profiler/ali_dataset.py",
-    "tools/intel_gemm_profiler/candidate_entries.py",
-    "tools/intel_gemm_profiler/candidate_manifest.py",
-    "tools/intel_gemm_profiler/candidate_space.py",
-    "tools/intel_gemm_profiler/candidates.py",
-    "tools/intel_gemm_profiler/config.py",
-    "tools/intel_gemm_profiler/catalog.py",
-    "tools/intel_gemm_profiler/catalog_generator.py",
-    "tools/intel_gemm_profiler/catalog_layered.py",
-    "tools/intel_gemm_profiler/catalog_space.py",
-    "tools/intel_gemm_profiler/constraints.py",
-    "tools/intel_gemm_profiler/constraints_probe.py",
-    "tools/intel_gemm_profiler/device_target.py",
-    "tools/intel_gemm_profiler/dispatch.py",
-    "tools/intel_gemm_profiler/hw_specs.py",
-    "tools/intel_gemm_profiler/prefilter.py",
-    "tools/intel_gemm_profiler/phase_a.py",
-    "tools/intel_gemm_profiler/runner.py",
-    "tools/intel_gemm_profiler/runner_benchmark.py",
-    "tools/intel_gemm_profiler/runner_benchmark_parse.py",
-    "tools/intel_gemm_profiler/schemas.py",
-    "tools/intel_gemm_profiler/selector.py",
-    "tools/intel_gemm_profiler/selector_summary.py",
-    "tools/intel_gemm_profiler/source_templates.py",
-    "tools/intel_gemm_profiler/utils.py",
-    "tools/intel_gemm_profiler/workflow.py",
-    "tools/intel_gemm_profiler/cli.py",
-    "tools/intel_gemm_profiler/build_config_bmg_perf.json",
-    "tools/intel_gemm_profiler/runtime_config_bmg_perf.json",
-    "tools/intel_gemm_profiler/intel_gemm_kernel_catalog_level0.json",
-    "tools/intel_gemm_profiler/intel_gemm_hw_reference_specs.json",
-    "tools/intel_gemm_profiler/analysis.py",
-    "tools/intel_gemm_profiler/analysis_gap.py",
-    "tools/intel_gemm_profiler/artifacts.py",
-    "tools/intel_gemm_profiler/bundle.py",
-    "tools/intel_gemm_profiler/build_plan.py",
-    "tools/intel_gemm_profiler/build_exec.py",
-    "tools/intel_gemm_profiler/inputs.py",
-    "tools/intel_gemm_profiler/README.md",
-    "tools/intel_gemm_profiler/OPERATION_MANUAL.md",
-    "tools/intel_gemm_profiler/phase_b.py",
-    "tools/intel_gemm_profiler/phase_b_outputs.py",
-    "tools/intel_gemm_profiler/gen_main.py",
-    "tools/intel_gemm_profiler/gen_mini_hpp.py",
-    "tools/intel_gemm_profiler/exact_shape_search_report.py",
-    "tools/intel_gemm_profiler/exact_shape_search_report_artifacts.py",
-    "tools/intel_gemm_profiler/remote_exact_shape_search.sh",
-    "tools/intel_gemm_profiler/remote_exact_shape_search_ctl.py",
-    "tools/intel_gemm_profiler/remote_exact_shape_search_status.sh",
-    "tools/intel_gemm_profiler/remote_exact_shape_search_stop.sh",
-    "tools/gen_main.py",
-    "tools/gen_mini_hpp.py",
-    "tools/remote_exact_shape_search.sh",
-    "tools/remote_exact_shape_search_status.sh",
-    "tools/remote_exact_shape_search_stop.sh",
-    "tools/exact_shape_search_report.py",
-    "media/docs/cpp/intel_b70_exact_shape_search_runbook.md",
-]
-
-
-@dataclass
-class RemoteConfig:
-    host: str
-    user: str
-    password: str
-    remote_repo: str
-    runs_dir: str
-    accept_new_host_key: bool
-
-
-class RemoteSession:
-    def __init__(self, config: RemoteConfig):
-        self.config = config
-        self.client = paramiko.SSHClient()
-        self.client.load_system_host_keys()
-        if config.accept_new_host_key:
-            self.client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        else:
-            self.client.set_missing_host_key_policy(paramiko.RejectPolicy())
-        self.client.connect(
-            config.host,
-            username=config.user,
-            password=config.password or None,
-            allow_agent=True,
-            look_for_keys=True,
-            timeout=20,
-        )
-
-    def close(self) -> None:
-        self.client.close()
-
-    def run(self, command: str, timeout: int = 120) -> tuple[int, str, str]:
-        stdin, stdout, stderr = self.client.exec_command(command, timeout=timeout)
-        out = stdout.read().decode("utf-8", errors="replace")
-        err = stderr.read().decode("utf-8", errors="replace")
-        code = stdout.channel.recv_exit_status()
-        return code, out, err
-
-    def upload(self, local_path: Path, remote_path: str, executable: bool = False) -> None:
-        sftp = self.client.open_sftp()
-        try:
-            sftp.put(str(local_path), remote_path)
-            if executable:
-                sftp.chmod(remote_path, 0o755)
-        finally:
-            sftp.close()
-
-
-def build_remote_config(args: argparse.Namespace) -> RemoteConfig:
-    return RemoteConfig(
-        host=args.host,
-        user=args.user,
-        password=args.password,
-        remote_repo=args.remote_repo,
-        runs_dir=args.runs_dir,
-        accept_new_host_key=args.accept_new_host_key,
-    )
-
-
-def sync_files(session: RemoteSession) -> None:
-    for rel in SYNC_FILES:
-        local_path = REPO_ROOT / rel
-        remote_path = posixpath.join(session.config.remote_repo, rel)
-        session.upload(local_path, remote_path, executable=remote_path.endswith(".sh"))
+from .remote_exact_shape_search_ctl_commands import (
+    build_launch_command,
+    build_report_command,
+    build_status_command,
+    build_stop_command,
+    command_sync as run_sync,
+    emit_command_output,
+)
+from .remote_exact_shape_search_ctl_common import (
+    DEFAULT_REMOTE_REPO,
+    DEFAULT_RUNS_DIR,
+    RemoteSession,
+    build_remote_config,
+    default_password,
+    sync_files,
+)
 
 
 def command_sync(args: argparse.Namespace) -> None:
     session = RemoteSession(build_remote_config(args))
     try:
-        sync_files(session)
-        print(json.dumps({"status": "synced", "files": SYNC_FILES}, indent=2))
+        run_sync(session)
     finally:
         session.close()
 
@@ -178,54 +50,17 @@ def command_launch(args: argparse.Namespace) -> None:
             sync_files(session)
             skip_remote_repo_sync = True
 
-        run_id = args.run_id or f"shape_search_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-        run_dir = posixpath.join(session.config.runs_dir, run_id)
-        log_path = posixpath.join(run_dir, "launcher.log")
-        env_parts = [
-            ("RUN_ID", run_id),
-            ("RUN_DIR", run_dir),
-            ("GPU_IDS", args.gpu_ids),
-            ("SHAPES", args.shapes),
-            ("LAYOUTS", args.layouts),
-            ("KERNEL_CATALOG_SOURCE", args.kernel_catalog_source),
-            ("BATCH_SIZE", str(args.batch_size)),
-            ("STOP_EXISTING", "1" if args.stop_existing else "0"),
-            ("RESUME_RUN", "1" if args.resume_run else "0"),
-            ("SKIP_SYNC", "1" if skip_remote_repo_sync else "0"),
-        ]
-        payload = json.dumps(
-            {
-                "remote_repo": session.config.remote_repo,
-                "run_dir": run_dir,
-                "log_path": log_path,
-                "env": dict(env_parts),
-            }
+        args.skip_remote_repo_sync = skip_remote_repo_sync
+        launch_cmd, run_id, log_path = build_launch_command(
+            session.config.remote_repo,
+            session.config.runs_dir,
+            args,
         )
-        launch_cmd = f"""python3 - <<'PY'
-import json
-import os
-import subprocess
-
-cfg = json.loads({shlex.quote(payload)})
-os.makedirs(cfg["run_dir"], exist_ok=True)
-env = os.environ.copy()
-env.update(cfg["env"])
-with open(cfg["log_path"], "ab", buffering=0) as log_file:
-    proc = subprocess.Popen(
-        ["bash", "tools/intel_gemm_profiler/remote_exact_shape_search.sh"],
-        cwd=cfg["remote_repo"],
-        env=env,
-        stdin=subprocess.DEVNULL,
-        stdout=log_file,
-        stderr=subprocess.STDOUT,
-        start_new_session=True,
-    )
-print(proc.pid)
-PY"""
         code, out, err = session.run(launch_cmd, timeout=60)
         if code != 0 or not out.strip():
             raise SystemExit(json.dumps({"status": "launch_failed", "stdout": out, "stderr": err}, indent=2))
         pid = out.strip().splitlines()[-1].strip()
+        run_dir = posixpath.join(session.config.runs_dir, run_id)
         print(json.dumps({"status": "launched", "run_id": run_id, "run_dir": run_dir, "pid": pid, "log_file": log_path}, indent=2))
     finally:
         session.close()
@@ -234,16 +69,13 @@ PY"""
 def command_status(args: argparse.Namespace) -> None:
     session = RemoteSession(build_remote_config(args))
     try:
-        run_dir = args.run_dir or ""
-        cmd = f"cd {shlex.quote(session.config.remote_repo)} && RUNS_DIR={shlex.quote(session.config.runs_dir)} "
-        if run_dir:
-            cmd += f"RUN_DIR={shlex.quote(run_dir)} "
-        cmd += "bash tools/intel_gemm_profiler/remote_exact_shape_search_status.sh"
+        cmd = build_status_command(
+            session.config.remote_repo,
+            session.config.runs_dir,
+            args.run_dir or "",
+        )
         code, out, err = session.run(cmd, timeout=args.timeout)
-        sys.stdout.write(out)
-        if err:
-            sys.stderr.write(err)
-        raise SystemExit(code)
+        emit_command_output(code, out, err)
     finally:
         session.close()
 
@@ -253,16 +85,13 @@ def command_stop(args: argparse.Namespace) -> None:
     try:
         if not args.no_sync_files:
             sync_files(session)
-        run_dir = args.run_dir or ""
-        cmd = f"cd {shlex.quote(session.config.remote_repo)} && RUNS_DIR={shlex.quote(session.config.runs_dir)} "
-        if run_dir:
-            cmd += f"RUN_DIR={shlex.quote(run_dir)} "
-        cmd += "bash tools/intel_gemm_profiler/remote_exact_shape_search_stop.sh"
+        cmd = build_stop_command(
+            session.config.remote_repo,
+            session.config.runs_dir,
+            args.run_dir or "",
+        )
         code, out, err = session.run(cmd, timeout=120)
-        sys.stdout.write(out)
-        if err:
-            sys.stderr.write(err)
-        raise SystemExit(code)
+        emit_command_output(code, out, err)
     finally:
         session.close()
 
@@ -276,19 +105,14 @@ def command_report(args: argparse.Namespace) -> None:
         if not run_dir:
             raise SystemExit("--run-dir is required for report")
         output_dir = args.output_dir or posixpath.join(run_dir, "reports")
-        cmd = (
-            f"cd {shlex.quote(session.config.remote_repo)} && "
-            f"python3 tools/intel_gemm_profiler/exact_shape_search_report.py "
-            f"--run-dir {shlex.quote(run_dir)} "
-            f"--output-dir {shlex.quote(output_dir)} "
+        cmd = build_report_command(
+            session.config.remote_repo,
+            run_dir,
+            output_dir,
+            args.shape_tag,
         )
-        if args.shape_tag:
-            cmd += f"--shape-tag {shlex.quote(args.shape_tag)} "
         code, out, err = session.run(cmd, timeout=args.timeout)
-        sys.stdout.write(out)
-        if err:
-            sys.stderr.write(err)
-        raise SystemExit(code)
+        emit_command_output(code, out, err)
     finally:
         session.close()
 
@@ -297,7 +121,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Local controller for remote exact-shape B70 search workflows.")
     parser.add_argument("--host", default="10.239.11.149")
     parser.add_argument("--user", default="root")
-    parser.add_argument("--password", default=os.environ.get("EXACT_SHAPE_REMOTE_PASSWORD", ""))
+    parser.add_argument("--password", default=default_password())
     parser.add_argument(
         "--accept-new-host-key",
         action="store_true",

@@ -109,7 +109,15 @@ WORKER_SYNC_FILES=(
   tools/intel_gemm_profiler/exact_shape_search_report_export.py
   tools/intel_gemm_profiler/exact_shape_search_report_repro.py
   tools/intel_gemm_profiler/exact_shape_search_report_rows.py
+  tools/intel_gemm_profiler/exact_shape_report/__init__.py
+  tools/intel_gemm_profiler/exact_shape_report/artifacts.py
+  tools/intel_gemm_profiler/exact_shape_report/export.py
+  tools/intel_gemm_profiler/exact_shape_report/repro.py
+  tools/intel_gemm_profiler/exact_shape_report/rows.py
   tools/intel_gemm_profiler/remote_exact_shape_search.sh
+  tools/intel_gemm_profiler/remote_ctl/__init__.py
+  tools/intel_gemm_profiler/remote_ctl/common.py
+  tools/intel_gemm_profiler/remote_ctl/commands.py
   tools/intel_gemm_profiler/remote_exact_shape_search_status.sh
   tools/intel_gemm_profiler/remote_exact_shape_search_stop.sh
   tools/gen_main.py

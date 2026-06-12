@@ -16,7 +16,7 @@ if __package__ in (None, ""):
         sys.path.insert(0, str(PACKAGE_ROOT))
     __package__ = "intel_gemm_profiler"
 
-from .remote_exact_shape_search_ctl_commands import (
+from .remote_ctl.commands import (
     build_launch_command,
     build_report_command,
     build_status_command,
@@ -24,7 +24,7 @@ from .remote_exact_shape_search_ctl_commands import (
     command_sync as run_sync,
     emit_command_output,
 )
-from .remote_exact_shape_search_ctl_common import (
+from .remote_ctl.common import (
     DEFAULT_REMOTE_REPO,
     DEFAULT_RUNS_DIR,
     RemoteSession,

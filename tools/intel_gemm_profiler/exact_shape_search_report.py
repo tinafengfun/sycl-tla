@@ -9,12 +9,12 @@ from collections import Counter
 from pathlib import Path
 
 try:
-    from .exact_shape_search_report_artifacts import (
+    from .exact_shape_report.artifacts import (
         infer_search_limitations,
         write_export_bundles,
         write_repro_artifacts,
     )
-    from .exact_shape_search_report_rows import (
+    from .exact_shape_report.rows import (
         iter_shape_tags,
         load_json,
         load_optional_json,
@@ -31,12 +31,12 @@ except ImportError:
     import sys
 
     sys.path.insert(0, str(Path(__file__).resolve().parent))
-    from exact_shape_search_report_artifacts import (  # type: ignore
+    from exact_shape_report.artifacts import (  # type: ignore
         infer_search_limitations,
         write_export_bundles,
         write_repro_artifacts,
     )
-    from exact_shape_search_report_rows import (  # type: ignore
+    from exact_shape_report.rows import (  # type: ignore
         iter_shape_tags,
         load_json,
         load_optional_json,

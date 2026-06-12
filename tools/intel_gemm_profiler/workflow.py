@@ -12,109 +12,72 @@ if __package__ in (None, ""):
     PACKAGE_ROOT = Path(__file__).resolve().parents[1]
     if str(PACKAGE_ROOT) not in sys.path:
         sys.path.insert(0, str(PACKAGE_ROOT))
-    from intel_gemm_profiler.catalog import build_kernel_catalog
-    from intel_gemm_profiler.candidates import (
-        build_candidate_build_manifest,
-        build_screening_entries,
-        generate_candidate_space,
-        generate_confirmation_entries,
-    )
-    from intel_gemm_profiler.constraints import (
-        apply_probe_results_to_profiles,
-        default_compiler_profiles,
-        default_constraints,
-        selected_compile_env,
-        selected_runtime_env,
-    )
-    from intel_gemm_profiler.artifacts import prepare_candidate_artifacts
-    from intel_gemm_profiler.bundle import (
-        build_artifact_bundle_manifest,
-        export_product_bundle_manifest,
-        validate_product_bundle_manifest,
-    )
-    from intel_gemm_profiler.build_plan import (
-        benchmark_batch_plan_by_kernel_id,
-        benchmark_command_strings,
-        benchmark_log_paths,
-        build_candidate_build_plan,
-        detect_available_vcpus,
-        resolve_candidate_build_jobs,
-        run_entries_with_batch_benchmarks,
-    )
-    from intel_gemm_profiler.build_exec import execute_candidate_build_plan, execute_candidate_build_preflight_plans, validate_candidate_auto_build_mode
-    from intel_gemm_profiler.inputs import (
-        SEARCH_STRATEGY_PRESETS,
-        apply_bruteforce_scheduler_search_defaults,
-        apply_search_strategy_defaults,
-        filter_candidate_space_by_compiled_kernels,
-        limit_shapes_and_reference,
-        load_compiled_kernel_list,
-        load_target_shapes_and_reference,
-    )
-    from intel_gemm_profiler.dispatch import DISPATCH_KEY_FIELDS, load_dispatch_table, lookup_dispatch_entry
-    from intel_gemm_profiler.device_target import resolve_profiles_device_target
-    from intel_gemm_profiler.hw_specs import resolve_hw_reference_spec
-    from intel_gemm_profiler.phase_a import (
-        empty_anomaly_report,
-        run_phase_a_probe,
-    )
-    from intel_gemm_profiler.phase_b import execute_phase_b, finalize_phase_b_outputs
-    from intel_gemm_profiler.runner import collect_environment_metadata, run_entries_with_benchmark, run_entries_with_streamk_example
-    from intel_gemm_profiler.selector import build_candidate_coverage_report, build_dispatch_table, build_phase_a_summary, build_phase_b_summary, build_reference_comparison, build_run_summary, write_results_csv
-    from intel_gemm_profiler.utils import ensure_dir, read_json, shell_init_with_env, write_json
-    from intel_gemm_profiler.schemas import SEARCH_RUNTIME_SCHEMA
-else:
-    from .catalog import build_kernel_catalog
-    from .candidates import (
-        build_candidate_build_manifest,
-        build_screening_entries,
-        generate_candidate_space,
-        generate_confirmation_entries,
-    )
-    from .constraints import (
-        apply_probe_results_to_profiles,
-        default_compiler_profiles,
-        default_constraints,
-        selected_compile_env,
-        selected_runtime_env,
-    )
-    from .artifacts import prepare_candidate_artifacts
-    from .bundle import (
-        build_artifact_bundle_manifest,
-        export_product_bundle_manifest,
-        validate_product_bundle_manifest,
-    )
-    from .build_plan import (
-        benchmark_batch_plan_by_kernel_id,
-        benchmark_command_strings,
-        benchmark_log_paths,
-        build_candidate_build_plan,
-        detect_available_vcpus,
-        resolve_candidate_build_jobs,
-        run_entries_with_batch_benchmarks,
-    )
-    from .build_exec import execute_candidate_build_plan, execute_candidate_build_preflight_plans, validate_candidate_auto_build_mode
-    from .inputs import (
-        SEARCH_STRATEGY_PRESETS,
-        apply_bruteforce_scheduler_search_defaults,
-        apply_search_strategy_defaults,
-        filter_candidate_space_by_compiled_kernels,
-        limit_shapes_and_reference,
-        load_compiled_kernel_list,
-        load_target_shapes_and_reference,
-    )
-    from .dispatch import DISPATCH_KEY_FIELDS, load_dispatch_table, lookup_dispatch_entry
-    from .device_target import resolve_profiles_device_target
-    from .hw_specs import resolve_hw_reference_spec
-    from .phase_a import (
-        empty_anomaly_report,
-        run_phase_a_probe,
-    )
-    from .phase_b import execute_phase_b, finalize_phase_b_outputs
-    from .runner import collect_environment_metadata, run_entries_with_benchmark, run_entries_with_streamk_example
-    from .selector import build_candidate_coverage_report, build_dispatch_table, build_phase_a_summary, build_phase_b_summary, build_reference_comparison, build_run_summary, write_results_csv
-    from .utils import ensure_dir, read_json, shell_init_with_env, write_json
-    from .schemas import SEARCH_RUNTIME_SCHEMA
+    __package__ = "intel_gemm_profiler"
+
+from .artifacts import prepare_candidate_artifacts
+from .build_exec import (
+    execute_candidate_build_plan,
+    execute_candidate_build_preflight_plans,
+    validate_candidate_auto_build_mode,
+)
+from .build_plan import (
+    benchmark_batch_plan_by_kernel_id,
+    benchmark_command_strings,
+    benchmark_log_paths,
+    build_candidate_build_plan,
+    detect_available_vcpus,
+    resolve_candidate_build_jobs,
+    run_entries_with_batch_benchmarks,
+)
+from .bundle import (
+    build_artifact_bundle_manifest,
+    export_product_bundle_manifest,
+    validate_product_bundle_manifest,
+)
+from .candidates import (
+    build_candidate_build_manifest,
+    build_screening_entries,
+    generate_candidate_space,
+    generate_confirmation_entries,
+)
+from .catalog import build_kernel_catalog
+from .constraints import (
+    apply_probe_results_to_profiles,
+    default_compiler_profiles,
+    default_constraints,
+    selected_compile_env,
+    selected_runtime_env,
+)
+from .device_target import resolve_profiles_device_target
+from .dispatch import DISPATCH_KEY_FIELDS, load_dispatch_table, lookup_dispatch_entry
+from .hw_specs import resolve_hw_reference_spec
+from .inputs import (
+    SEARCH_STRATEGY_PRESETS,
+    apply_bruteforce_scheduler_search_defaults,
+    apply_search_strategy_defaults,
+    filter_candidate_space_by_compiled_kernels,
+    limit_shapes_and_reference,
+    load_compiled_kernel_list,
+    load_target_shapes_and_reference,
+)
+from .phase_a import empty_anomaly_report, run_phase_a_probe
+from .phase_b import execute_phase_b, finalize_phase_b_outputs
+from .runner import (
+    collect_environment_metadata,
+    run_entries_with_benchmark,
+    run_entries_with_streamk_example,
+)
+from .schemas import SEARCH_RUNTIME_SCHEMA
+from .selector import (
+    build_candidate_coverage_report,
+    build_dispatch_table,
+    build_phase_a_summary,
+    build_phase_b_summary,
+    build_reference_comparison,
+    build_run_summary,
+    write_results_csv,
+)
+from .utils import ensure_dir, read_json, shell_init_with_env, write_json
 
 
 def workflow(args):
@@ -302,29 +265,17 @@ def workflow(args):
 
 
 def build_parser():
-    if __package__ in (None, ""):
-        from intel_gemm_profiler.cli import build_parser as _build_parser
-    else:
-        from .cli import build_parser as _build_parser
-
+    from .cli import build_parser as _build_parser
     return _build_parser()
 
 
 def dispatch_lookup_from_args(args):
-    if __package__ in (None, ""):
-        from intel_gemm_profiler.cli import dispatch_lookup_from_args as _dispatch_lookup_from_args
-    else:
-        from .cli import dispatch_lookup_from_args as _dispatch_lookup_from_args
-
+    from .cli import dispatch_lookup_from_args as _dispatch_lookup_from_args
     return _dispatch_lookup_from_args(args)
 
 
 def main():
-    if __package__ in (None, ""):
-        from intel_gemm_profiler.cli import main as _main
-    else:
-        from .cli import main as _main
-
+    from .cli import main as _main
     return _main()
 
 

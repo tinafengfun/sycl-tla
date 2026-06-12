@@ -42,6 +42,7 @@ SYNC_FILES = [
     "tools/intel_gemm_profiler/candidates.py",
     "tools/intel_gemm_profiler/config.py",
     "tools/intel_gemm_profiler/catalog.py",
+    "tools/intel_gemm_profiler/catalog_generator.py",
     "tools/intel_gemm_profiler/catalog_space.py",
     "tools/intel_gemm_profiler/constraints.py",
     "tools/intel_gemm_profiler/constraints_probe.py",

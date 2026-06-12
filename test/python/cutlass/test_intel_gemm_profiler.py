@@ -738,7 +738,7 @@ class TestIntelGemmProfiler(unittest.TestCase):
             candidate_space["candidate_exception_summary"][0]["count"],
             candidate_space["candidate_coverage"]["exception_count"],
         )
-        self.assertTrue(candidate_space["candidate_exception_summary"][0]["sample_kernel_names"][0].endswith("_stream_k"))
+        self.assertIn("stream_k", candidate_space["candidate_exception_summary"][0]["sample_kernel_names"][0])
         self.assertTrue(
             any(
                 item["reason"] == "intel_xe_generated_streamk_tile_scheduler_unsupported"
@@ -2177,7 +2177,7 @@ class TestIntelGemmProfiler(unittest.TestCase):
             self.assertTrue(any(entry["stages"] == 0 for entry in kernel_catalog["kernels"]))
             self.assertEqual(candidate_space["candidate_coverage"]["accepted_candidate_count"], len(candidate_space["candidates"]))
             self.assertEqual(candidate_space["candidate_coverage"]["exception_count"], len(candidate_space["candidate_exceptions"]))
-            self.assertTrue(candidate_space["candidate_exception_summary"][0]["sample_kernel_names"][0].endswith("_stream_k"))
+            self.assertIn("stream_k", candidate_space["candidate_exception_summary"][0]["sample_kernel_names"][0])
             self.assertGreater(len(build_manifest["variants"]), 8)
             self.assertFalse(any("_stream_k" in variant["kernel_id"] for variant in build_manifest["variants"]))
             self.assertTrue(

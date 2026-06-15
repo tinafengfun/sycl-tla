@@ -47,6 +47,9 @@ BENCHMARK_INPUT_POOL_TARGET_BYTES="${BENCHMARK_INPUT_POOL_TARGET_BYTES:-10737418
 BENCHMARK_WARMUP_ITERS="${BENCHMARK_WARMUP_ITERS:-50}"
 BENCHMARK_MEASURE_ITERS="${BENCHMARK_MEASURE_ITERS:-100}"
 BENCHMARK_FIXED_VRAM_INPUT="${CUTLASS_BENCHMARK_FIXED_VRAM_INPUT:-0}"
+PRIORITY_STRATEGY="${PRIORITY_STRATEGY:-b70_learned_sg_tiers_v1}"
+PRIORITY_STATE_PATH="${PRIORITY_STATE_PATH:-$RUNS_DIR/exact_shape_priority_state.json}"
+PRIORITY_TOP_K="${PRIORITY_TOP_K:-128}"
 ACTIVE_SHAPE_TAG=""
 WORKER_SYNC_FILES=(
   benchmarks/common.hpp
@@ -98,6 +101,7 @@ WORKER_SYNC_FILES=(
   tools/intel_gemm_profiler/build_plan.py
   tools/intel_gemm_profiler/build_exec.py
   tools/intel_gemm_profiler/inputs.py
+  tools/intel_gemm_profiler/exact_shape_priority.py
   tools/intel_gemm_profiler/README.md
   tools/intel_gemm_profiler/OPERATION_MANUAL.md
   tools/intel_gemm_profiler/phase_b.py
@@ -549,6 +553,9 @@ benchmark_input_pool_target_bytes=$BENCHMARK_INPUT_POOL_TARGET_BYTES
 benchmark_warmup_iters=$BENCHMARK_WARMUP_ITERS
 benchmark_measure_iters=$BENCHMARK_MEASURE_ITERS
 benchmark_fixed_vram_input=$BENCHMARK_FIXED_VRAM_INPUT
+priority_strategy=$PRIORITY_STRATEGY
+priority_state_path=$PRIORITY_STATE_PATH
+priority_top_k=$PRIORITY_TOP_K
 benchmark_config_json=$RUN_DIR/benchmark_config.json
 synced_sources_json=$RUN_DIR/synced_sources.json
 started_at=$(date -Iseconds)
@@ -602,6 +609,7 @@ PY
   fi
   export REPO_ROOT RUN_DIR MANIFEST_DIR DTYPE_A DTYPE_B DTYPE_C DTYPE_D DTYPE_ACC LAYOUTS BATCH_SIZE KERNEL_CATALOG_SOURCE
   export GPU_IDS_CSV
+  export SHAPES PRIORITY_STATE_PATH PRIORITY_STRATEGY PRIORITY_TOP_K
   python3 - <<'PY'
 import json
 import os
@@ -619,10 +627,20 @@ from intel_gemm_profiler.catalog import (
     generated_layered_bmg_scheduler_expanded_kernel_catalog,
 )
 from intel_gemm_profiler.constraints import default_constraints
+from intel_gemm_profiler.exact_shape_priority import (
+    load_exact_shape_priority_state,
+    prioritize_exact_shape_kernels,
+)
+from intel_gemm_profiler.hw_specs import resolve_hw_reference_spec
 
 layouts = tuple(x for x in os.environ["LAYOUTS"].split(",") if x)
 gpu_ids = [int(x) for x in os.environ["GPU_IDS_CSV"].split(",") if x]
 batch_size = int(os.environ["BATCH_SIZE"])
+priority_top_k = int(os.environ["PRIORITY_TOP_K"])
+shapes = []
+for spec in os.environ["SHAPES"].split(";"):
+    m, n, k = spec.split("x")
+    shapes.append({"m": int(m), "n": int(n), "k": int(k)})
 
 catalog_source = os.environ["KERNEL_CATALOG_SOURCE"]
 catalog_factories = {
@@ -645,7 +663,18 @@ selected_entries = [
     and entry.get("runner") != "streamk_example"
 ]
 selected_by_kernel = {entry["kernel_name"]: entry for entry in selected_entries}
-kernels = sorted(selected_by_kernel)
+state = load_exact_shape_priority_state(os.environ["PRIORITY_STATE_PATH"])
+hw_spec = resolve_hw_reference_spec(device_arch="bmg", hw_spec_id="bmg_g31")
+priority_doc = prioritize_exact_shape_kernels(
+    list(selected_by_kernel.values()),
+    shapes,
+    hw_spec=hw_spec,
+    state=state,
+    top_k=priority_top_k,
+)
+ranked_entries = priority_doc["ranked_entries"]
+ranked_by_kernel = {entry["kernel_name"]: entry for entry in ranked_entries}
+kernels = [entry["kernel_name"] for entry in ranked_entries]
 
 if not kernels:
     raise SystemExit("No kernels matched the requested dtype/layout filters.")
@@ -653,24 +682,30 @@ if not kernels:
 batches = [kernels[i:i + batch_size] for i in range(0, len(kernels), batch_size)]
 manifest = {
     "total_kernels": len(kernels),
+    "selected_kernel_count_before_filter": priority_doc["input_entry_count"],
+    "filtered_kernel_count": priority_doc["filtered_entry_count"],
     "batch_size": batch_size,
     "batch_count": len(batches),
     "gpu_count": len(gpu_ids),
     "kernel_catalog_source": catalog_source,
     "catalog_version": catalog.get("catalog_version", ""),
     "kernel_metadata": str(run_dir / "kernel_metadata.json"),
+    "priority_strategy": os.environ["PRIORITY_STRATEGY"],
+    "priority_state_path": os.environ["PRIORITY_STATE_PATH"],
+    "priority_ranking": str(run_dir / "priority_ranking.json"),
 }
 
 manifest_dir.mkdir(parents=True, exist_ok=True)
 kernel_metadata = {}
 for kernel_name in kernels:
-    entry = selected_by_kernel[kernel_name]
+    entry = ranked_by_kernel[kernel_name]
     metadata = dict(entry)
     metadata["kernel_name"] = kernel_name
     metadata.setdefault("kernel_id", kernel_name)
     metadata.setdefault("dtype_d", entry.get("dtype_d", entry.get("dtype_c")))
     kernel_metadata[kernel_name] = metadata
 (run_dir / "kernel_metadata.json").write_text(json.dumps(kernel_metadata, indent=2) + "\n", encoding="utf-8")
+(run_dir / "priority_ranking.json").write_text(json.dumps(priority_doc, indent=2) + "\n", encoding="utf-8")
 for gpu_slot in range(len(gpu_ids)):
     (manifest_dir / f"gpu{gpu_ids[gpu_slot]}_batches.txt").write_text("", encoding="utf-8")
 
@@ -956,6 +991,24 @@ run_shapes() {
       mark_active_shape_failed
       fail "shape $shape_tag produced $count CSV files, expected $total_batches"
     fi
+    python3 - <<PY
+import sys
+from pathlib import Path
+
+repo_root = Path("${REPO_ROOT}")
+sys.path.insert(0, str(repo_root / "test" / "benchmarks"))
+sys.path.insert(0, str(repo_root / "python"))
+
+from intel_gemm_profiler.exact_shape_priority import update_exact_shape_priority_state_from_run
+from intel_gemm_profiler.hw_specs import resolve_hw_reference_spec
+
+update_exact_shape_priority_state_from_run(
+    "${RUN_DIR}",
+    "${shape_tag}",
+    "${PRIORITY_STATE_PATH}",
+    hw_spec=resolve_hw_reference_spec(device_arch="bmg", hw_spec_id="bmg_g31"),
+)
+PY
     echo "completed" > "$STATUS_DIR/${shape_tag}.status"
     touch "$STATUS_DIR/${shape_tag}.done"
     printf '%s\n' "$shape_tag" >> "$STATUS_DIR/completed_shapes.txt"

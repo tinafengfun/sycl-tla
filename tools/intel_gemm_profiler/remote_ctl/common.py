@@ -69,6 +69,7 @@ SYNC_FILES = [
     "tools/intel_gemm_profiler/build_plan.py",
     "tools/intel_gemm_profiler/build_exec.py",
     "tools/intel_gemm_profiler/inputs.py",
+    "tools/intel_gemm_profiler/exact_shape_priority.py",
     "tools/intel_gemm_profiler/README.md",
     "tools/intel_gemm_profiler/OPERATION_MANUAL.md",
     "tools/intel_gemm_profiler/phase_b.py",

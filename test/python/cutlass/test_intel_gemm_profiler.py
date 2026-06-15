@@ -3962,6 +3962,284 @@ class TestIntelGemmProfiler(unittest.TestCase):
         self.assertEqual(summary["hw_reference_spec_id"], "bmg_g21")
         self.assertEqual(summary["anomaly_report"]["anomalies"][0]["candidate_id"], "cand_large")
 
+    def test_exact_shape_priority_prefers_huge_n_gemm_family(self):
+        hw_spec = profiler.resolve_hw_reference_spec("bmg", "bmg_g31")
+        shape = {"m": 8192, "n": 76032, "k": 8192}
+        gemm = {
+            "kernel_name": "gemm_huge_n",
+            "layout": "rcr",
+            "tile_m": 128,
+            "tile_n": 512,
+            "tile_k": 32,
+            "sg_m": 4,
+            "sg_n": 8,
+            "stages": 3,
+            "streamk_mode": "",
+            "dtype_a": "bf16",
+        }
+        data_parallel = {
+            "kernel_name": "dp_huge_n",
+            "layout": "rcr",
+            "tile_m": 512,
+            "tile_n": 128,
+            "tile_k": 32,
+            "sg_m": 8,
+            "sg_n": 4,
+            "stages": 2,
+            "streamk_mode": "data_parallel",
+            "dtype_a": "bf16",
+        }
+
+        gemm_score = profiler.score_exact_shape_kernel(gemm, shape, hw_spec=hw_spec)["score"]
+        dp_score = profiler.score_exact_shape_kernel(data_parallel, shape, hw_spec=hw_spec)["score"]
+        ranked = profiler.prioritize_exact_shape_kernels([data_parallel, gemm], [shape], hw_spec=hw_spec)
+
+        self.assertGreater(gemm_score, dp_score)
+        self.assertEqual(ranked["ranked_entries"][0]["kernel_name"], "gemm_huge_n")
+        self.assertEqual(ranked["ranked_entries"][0]["priority_bucket"], "huge_n")
+
+    def test_exact_shape_priority_prefers_deep_k_data_parallel_family(self):
+        hw_spec = profiler.resolve_hw_reference_spec("bmg", "bmg_g31")
+        shape = {"m": 8192, "n": 19008, "k": 13312}
+        gemm = {
+            "kernel_name": "gemm_deep_k",
+            "layout": "rcr",
+            "tile_m": 128,
+            "tile_n": 256,
+            "tile_k": 64,
+            "sg_m": 4,
+            "sg_n": 8,
+            "stages": 3,
+            "streamk_mode": "",
+            "dtype_a": "bf16",
+        }
+        data_parallel = {
+            "kernel_name": "dp_deep_k",
+            "layout": "rcr",
+            "tile_m": 512,
+            "tile_n": 64,
+            "tile_k": 32,
+            "sg_m": 8,
+            "sg_n": 2,
+            "stages": 3,
+            "streamk_mode": "data_parallel",
+            "dtype_a": "bf16",
+        }
+
+        gemm_score = profiler.score_exact_shape_kernel(gemm, shape, hw_spec=hw_spec)["score"]
+        dp_score = profiler.score_exact_shape_kernel(data_parallel, shape, hw_spec=hw_spec)["score"]
+        ranked = profiler.prioritize_exact_shape_kernels([gemm, data_parallel], [shape], hw_spec=hw_spec)
+
+        self.assertGreater(dp_score, gemm_score)
+        self.assertEqual(ranked["ranked_entries"][0]["kernel_name"], "dp_deep_k")
+        self.assertEqual(ranked["ranked_entries"][0]["priority_bucket"], "deep_k_mid_n")
+
+    def test_exact_shape_priority_filters_hard_sg_losers(self):
+        hw_spec = profiler.resolve_hw_reference_spec("bmg", "bmg_g31")
+        shape = {"m": 8192, "n": 19008, "k": 13312}
+        filtered = {
+            "kernel_name": "gemm_filtered_1x4",
+            "layout": "rcr",
+            "tile_m": 64,
+            "tile_n": 128,
+            "tile_k": 32,
+            "sg_m": 1,
+            "sg_n": 4,
+            "stages": 2,
+            "streamk_mode": "",
+            "dtype_a": "bf16",
+        }
+        kept = {
+            "kernel_name": "dp_kept_8x2",
+            "layout": "rcr",
+            "tile_m": 512,
+            "tile_n": 64,
+            "tile_k": 32,
+            "sg_m": 8,
+            "sg_n": 2,
+            "stages": 3,
+            "streamk_mode": "data_parallel",
+            "dtype_a": "bf16",
+        }
+
+        ranked = profiler.prioritize_exact_shape_kernels([filtered, kept], [shape], hw_spec=hw_spec)
+
+        self.assertEqual(ranked["kept_entry_count"], 1)
+        self.assertEqual(ranked["filtered_entry_count"], 1)
+        self.assertEqual(ranked["ranked_entries"][0]["kernel_name"], "dp_kept_8x2")
+        self.assertEqual(ranked["filtered_entries"][0]["kernel_name"], "gemm_filtered_1x4")
+        self.assertEqual(ranked["filtered_entries"][0]["priority_filter_reason"], "hard_filter_subgroup:1x4")
+
+    def test_exact_shape_priority_demotes_scheduler_2x8_subgroup(self):
+        hw_spec = profiler.resolve_hw_reference_spec("bmg", "bmg_g31")
+        shape = {"m": 8192, "n": 19008, "k": 13312}
+        high = {
+            "kernel_name": "dp_high_8x2",
+            "layout": "rcr",
+            "tile_m": 512,
+            "tile_n": 64,
+            "tile_k": 32,
+            "sg_m": 8,
+            "sg_n": 2,
+            "stages": 3,
+            "streamk_mode": "data_parallel",
+            "dtype_a": "bf16",
+        }
+        low = {
+            "kernel_name": "dp_low_2x8",
+            "layout": "rcr",
+            "tile_m": 64,
+            "tile_n": 512,
+            "tile_k": 32,
+            "sg_m": 2,
+            "sg_n": 8,
+            "stages": 3,
+            "streamk_mode": "data_parallel",
+            "dtype_a": "bf16",
+        }
+
+        ranked = profiler.prioritize_exact_shape_kernels([low, high], [shape], hw_spec=hw_spec)
+
+        self.assertEqual(ranked["ranked_entries"][0]["kernel_name"], "dp_high_8x2")
+        self.assertEqual(ranked["ranked_entries"][0]["priority_tier"], "high")
+        self.assertEqual(ranked["ranked_entries"][1]["kernel_name"], "dp_low_2x8")
+        self.assertEqual(ranked["ranked_entries"][1]["priority_tier"], "low")
+        self.assertIn("low_priority_scheduler_subgroup", ranked["ranked_entries"][1]["priority_tier_reason"])
+
+    def test_exact_shape_priority_demotes_gemm_2x4_subgroup(self):
+        hw_spec = profiler.resolve_hw_reference_spec("bmg", "bmg_g31")
+        shape = {"m": 8192, "n": 384, "k": 3584}
+        high = {
+            "kernel_name": "gemm_high_4x8",
+            "layout": "rcr",
+            "tile_m": 64,
+            "tile_n": 128,
+            "tile_k": 64,
+            "sg_m": 4,
+            "sg_n": 8,
+            "stages": 2,
+            "streamk_mode": "",
+            "dtype_a": "bf16",
+        }
+        low = {
+            "kernel_name": "gemm_low_2x4",
+            "layout": "rcr",
+            "tile_m": 64,
+            "tile_n": 128,
+            "tile_k": 64,
+            "sg_m": 2,
+            "sg_n": 4,
+            "stages": 2,
+            "streamk_mode": "",
+            "dtype_a": "bf16",
+        }
+
+        ranked = profiler.prioritize_exact_shape_kernels([low, high], [shape], hw_spec=hw_spec)
+
+        self.assertEqual(ranked["ranked_entries"][0]["kernel_name"], "gemm_high_4x8")
+        self.assertEqual(ranked["ranked_entries"][1]["kernel_name"], "gemm_low_2x4")
+        self.assertEqual(ranked["ranked_entries"][1]["priority_tier"], "low")
+        self.assertIn("low_priority_gemm_subgroup", ranked["ranked_entries"][1]["priority_tier_reason"])
+
+    def test_learn_exact_shape_priority_state_tracks_winner_features(self):
+        state = profiler.default_exact_shape_priority_state()
+        merged_rows = [
+            {
+                "kernel_name": "winner",
+                "layout": "rcr",
+                "status": "OK",
+                "tflops": 141.79,
+                "total_runtime_ms": 3000.0,
+                "priority_rank": 2,
+                "priority_score": 19.5,
+                "tile_m": 512,
+                "tile_n": 64,
+                "tile_k": 32,
+                "sg_m": 8,
+                "sg_n": 2,
+                "stages": 3,
+                "streamk_mode": "data_parallel",
+            },
+            {
+                "kernel_name": "runner_up",
+                "layout": "rcr",
+                "status": "OK",
+                "tflops": 140.9,
+                "total_runtime_ms": 3010.0,
+                "priority_rank": 4,
+                "priority_score": 18.1,
+                "tile_m": 512,
+                "tile_n": 64,
+                "tile_k": 32,
+                "sg_m": 8,
+                "sg_n": 2,
+                "stages": 3,
+                "streamk_mode": "splitk",
+            },
+        ]
+
+        updated, summary = profiler.learn_exact_shape_priority_state(
+            "8192_19008_13312",
+            merged_rows,
+            state,
+            run_signature="shape_search_demo:8192_19008_13312",
+        )
+
+        bucket = updated["bucket_stats"]["deep_k_mid_n"]
+        self.assertEqual(bucket["run_count"], 1)
+        self.assertIn("shape_search_demo:8192_19008_13312", updated["learned_runs"])
+        self.assertGreater(bucket["feature_weights"]["wg:512"], 0.0)
+        self.assertGreater(bucket["feature_weights"]["scheduler:data_parallel"], 0.0)
+        self.assertEqual(summary["best_kernel"], "winner")
+        self.assertEqual(summary["winner_priority_rank"], 2)
+
+    def test_update_exact_shape_priority_state_from_run_writes_feedback(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            run_dir = Path(tmpdir) / "shape_search_demo"
+            shape_dir = run_dir / "results" / "8192_19008_13312"
+            shape_dir.mkdir(parents=True)
+            (run_dir / "kernel_metadata.json").write_text(
+                json.dumps(
+                    {
+                        "winner": {
+                            "kernel_name": "winner",
+                            "layout": "rcr",
+                            "priority_rank": 3,
+                            "priority_score": 17.25,
+                            "tile_m": 512,
+                            "tile_n": 64,
+                            "tile_k": 32,
+                            "sg_m": 8,
+                            "sg_n": 2,
+                            "stages": 3,
+                            "streamk_mode": "data_parallel",
+                        }
+                    },
+                    indent=2,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            (shape_dir / "batch_0000_gpu0.csv").write_text(
+                "kernel,tflops,avg_runtime_ms,total_runtime_ms,measure_iters,warmup_iters,latency_source,status,gpu,m,n,k\n"
+                "winner,141.79,30.0,3000.0,100,50,reported,OK,0,8192,19008,13312\n",
+                encoding="utf-8",
+            )
+            state_path = Path(tmpdir) / "priority_state.json"
+
+            feedback = profiler.update_exact_shape_priority_state_from_run(
+                run_dir,
+                "8192_19008_13312",
+                state_path,
+                hw_spec=profiler.resolve_hw_reference_spec("bmg", "bmg_g31"),
+            )
+            saved_state = profiler.load_exact_shape_priority_state(state_path)
+            feedback_exists = (run_dir / "priority_feedback_8192_19008_13312.json").exists()
+
+        self.assertEqual(feedback["best_kernel"], "winner")
+        self.assertTrue(feedback_exists)
+        self.assertIn("shape_search_demo:8192_19008_13312", saved_state["learned_runs"])
+
 
 if __name__ == "__main__":
     unittest.main()

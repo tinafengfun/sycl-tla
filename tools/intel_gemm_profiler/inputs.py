@@ -37,6 +37,12 @@ SEARCH_STRATEGY_PRESETS = {
         "run_candidate_build_preflight": True,
         "use_candidate_build_preflight_benchmarks": True,
     },
+    "weight_only_codegen": {
+        "kernel_catalog_source": "weight_only_codegen",
+        "prefilter": "none",
+        "run_candidate_build_preflight": False,
+        "use_candidate_build_preflight_benchmarks": False,
+    },
 }
 
 
@@ -82,8 +88,13 @@ def apply_search_strategy_defaults(args):
     if preset:
         args.kernel_catalog_source = preset["kernel_catalog_source"]
         args.prefilter = preset["prefilter"]
-        args.run_candidate_build_preflight = preset["run_candidate_build_preflight"]
-        args.use_candidate_build_preflight_benchmarks = preset["use_candidate_build_preflight_benchmarks"]
+        args.run_candidate_build_preflight = bool(getattr(args, "run_candidate_build_preflight", False) or preset["run_candidate_build_preflight"])
+        args.use_candidate_build_preflight_benchmarks = bool(
+            getattr(args, "use_candidate_build_preflight_benchmarks", False)
+            or preset["use_candidate_build_preflight_benchmarks"]
+        )
+    if strategy == "weight_only_codegen":
+        args.build_candidate_benchmark = not (getattr(args, "skip_run", False) or getattr(args, "dry_run", False))
     if strategy == "bruteforce_scheduler" and getattr(args, "candidate_build_batch_size", 0) <= 0:
         args.candidate_build_batch_size = 1
     if strategy == "bruteforce_scheduler" and (getattr(args, "skip_run", False) or getattr(args, "dry_run", False)):

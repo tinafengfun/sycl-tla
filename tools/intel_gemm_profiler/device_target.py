@@ -8,9 +8,10 @@ import json
 import os
 import re
 import subprocess
+from pathlib import Path
 
 from .schemas import SCHEMA_VERSION
-from .utils import now_iso, shell_join
+from .utils import now_iso, resolve_executable, shell_join
 
 
 DEFAULT_TARGET_DETECTION = {
@@ -41,6 +42,8 @@ DEVICE_TARGET_BY_PCI_ID = {
         "cmake_target": "intel_gpu_bmg_g21",
     },
 }
+
+HOST_COMPILER_FALLBACKS = ("g++", "clang++", "c++")
 
 
 def _target(cmake_target, device_arch, hw_spec_id, reason):
@@ -128,6 +131,59 @@ def parse_xpu_smi_json(text):
     return devices
 
 
+def _read_optional_text(path):
+    try:
+        return Path(path).read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+
+def discover_sysfs_drm_devices(target_device_id="", drm_root="/sys/class/drm"):
+    errors = []
+    root = Path(drm_root)
+    if not root.exists():
+        return [], "", errors
+
+    devices = []
+    for entry in sorted(root.iterdir(), key=lambda item: item.name):
+        match = re.fullmatch(r"card([0-9]+)", entry.name)
+        if not match:
+            continue
+        device_id = match.group(1)
+        if target_device_id and device_id != str(target_device_id):
+            continue
+        vendor_id = _read_optional_text(entry / "device" / "vendor").lower()
+        pci_device_id = _read_optional_text(entry / "device" / "device").lower()
+        if vendor_id and vendor_id not in {"0x8086", "8086"}:
+            continue
+        if not pci_device_id:
+            continue
+        subsystem_vendor_id = _read_optional_text(entry / "device" / "subsystem_vendor").lower()
+        subsystem_device_id = _read_optional_text(entry / "device" / "subsystem_device").lower()
+        uevent = _read_optional_text(entry / "device" / "uevent")
+        raw_parts = [
+            entry.name,
+            f"vendor={vendor_id}" if vendor_id else "",
+            f"device={pci_device_id}",
+            f"subsystem_vendor={subsystem_vendor_id}" if subsystem_vendor_id else "",
+            f"subsystem_device={subsystem_device_id}" if subsystem_device_id else "",
+            uevent,
+        ]
+        devices.append(
+            {
+                "device_id": device_id,
+                "device_name": "",
+                "pci_device_id": pci_device_id,
+                "vendor_id": vendor_id,
+                "subsystem_vendor_id": subsystem_vendor_id,
+                "subsystem_device_id": subsystem_device_id,
+                "raw": " ".join(part for part in raw_parts if part).strip(),
+                "source": "sysfs_drm",
+            }
+        )
+    return devices, f"sysfs:{root.as_posix()}", errors
+
+
 def selected_device_id(runtime_config=None, environ=None):
     environ = environ or os.environ
     runtime_config = runtime_config or {}
@@ -147,6 +203,41 @@ def selected_device_id(runtime_config=None, environ=None):
     return ""
 
 
+def resolve_dpcpp_host_compiler(build_config):
+    resolved = copy.deepcopy(build_config)
+    cmake_vars = resolved.setdefault("cmake_vars", {})
+    requested = str(cmake_vars.get("DPCPP_HOST_COMPILER", "") or "")
+    record = {
+        "requested_host_compiler": requested,
+        "resolved_host_compiler": requested,
+        "host_compiler_status": "unset" if not requested else "configured",
+        "host_compiler_reason": "",
+    }
+    if not requested:
+        return resolved, record
+
+    requested_path = resolve_executable(requested)
+    if requested_path:
+        cmake_vars["DPCPP_HOST_COMPILER"] = str(requested_path)
+        record["resolved_host_compiler"] = str(requested_path)
+        record["host_compiler_reason"] = "requested host compiler found on PATH"
+        return resolved, record
+
+    for candidate in HOST_COMPILER_FALLBACKS:
+        candidate_path = resolve_executable(candidate)
+        if not candidate_path:
+            continue
+        cmake_vars["DPCPP_HOST_COMPILER"] = str(candidate_path)
+        record["resolved_host_compiler"] = str(candidate_path)
+        record["host_compiler_status"] = "fallback"
+        record["host_compiler_reason"] = f"requested host compiler {requested!r} not found; using available fallback {candidate!r}"
+        return resolved, record
+
+    record["host_compiler_status"] = "missing"
+    record["host_compiler_reason"] = f"requested host compiler {requested!r} not found and no fallback compiler was available"
+    return resolved, record
+
+
 def _run_discovery_command(command, shell_init):
     payload = shell_join(command)
     if shell_init:
@@ -156,6 +247,10 @@ def _run_discovery_command(command, shell_init):
 
 def discover_xpu_smi_devices(shell_init="", target_device_id=""):
     errors = []
+    sysfs_devices, sysfs_command, sysfs_errors = discover_sysfs_drm_devices(target_device_id=target_device_id)
+    if sysfs_devices:
+        return sysfs_devices, sysfs_command, errors
+    errors.extend(sysfs_errors)
     # When a specific device is requested, use targeted discovery first
     # (JSON mode may use different numbering than ZE_AFFINITY_MASK)
     if target_device_id:
@@ -204,7 +299,7 @@ def discover_xpu_smi_devices(shell_init="", target_device_id=""):
 
 
 def resolve_device_target(build_config, runtime_config=None, shell_init="", environ=None, discovery_devices=None):
-    resolved = copy.deepcopy(build_config)
+    resolved, host_compiler_record = resolve_dpcpp_host_compiler(build_config)
     detection_config = dict(DEFAULT_TARGET_DETECTION)
     detection_config.update(resolved.get("device_target_detection", {}))
     cmake_var = detection_config.get("cmake_var", "DPCPP_SYCL_TARGET")
@@ -225,6 +320,7 @@ def resolve_device_target(build_config, runtime_config=None, shell_init="", envi
         "discovery_command": "",
         "errors": [],
     }
+    record.update(host_compiler_record)
     if not should_detect:
         return resolved, record
 

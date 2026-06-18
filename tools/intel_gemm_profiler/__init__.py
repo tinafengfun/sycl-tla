@@ -44,9 +44,11 @@ from .hw_specs import (
     resolve_hw_reference_spec,
 )
 from .device_target import (
+    discover_sysfs_drm_devices,
     discover_xpu_smi_devices,
     parse_xpu_smi_discovery,
     parse_xpu_smi_json,
+    resolve_dpcpp_host_compiler,
     resolve_device_target,
     resolve_profiles_device_target,
     selected_device_id,
@@ -61,6 +63,14 @@ from .runner import (
     parse_streamk_example_log,
     run_entries_with_benchmark,
     run_entries_with_streamk_example,
+    run_entries_with_batch_weight_only_codegen,
+    run_entries_with_weight_only_example,
+    run_entries_with_weight_only_codegen,
+)
+from .mixed_dtype_codegen import (
+    emit_weight_only_mixed_dtype_project,
+    generated_weight_only_mixed_dtype_kernel_catalog,
+    weight_only_mixed_dtype_candidates,
 )
 from .runner_benchmark import run_benchmark
 from .runner_benchmark_parse import parse_benchmark_log, parse_metric, timeout_rows
@@ -100,11 +110,28 @@ from .exact_shape_priority import (
     update_exact_shape_priority_state_from_run,
     write_exact_shape_priority_state,
 )
-from .cli import build_parser, dispatch_lookup_from_args, main
 from .bundle import build_artifact_bundle_manifest, export_product_bundle_manifest, validate_product_bundle_manifest
 from .build_plan import benchmark_batch_plan_by_kernel_id, benchmark_command_strings, benchmark_exe_for_build_plan, benchmark_log_paths, build_candidate_build_plan, detect_available_vcpus, resolve_candidate_build_jobs, run_entries_with_batch_benchmarks
 from .build_exec import execute_candidate_build_plan, execute_candidate_build_preflight_plans, validate_candidate_auto_build_mode
 from .workflow import workflow
+
+
+def build_parser():
+    from .cli import build_parser as _build_parser
+
+    return _build_parser()
+
+
+def dispatch_lookup_from_args(args):
+    from .cli import dispatch_lookup_from_args as _dispatch_lookup_from_args
+
+    return _dispatch_lookup_from_args(args)
+
+
+def main():
+    from .cli import main as _main
+
+    return _main()
 
 __all__ = [
     "BENCHMARK_ERROR_RE",
@@ -144,6 +171,7 @@ __all__ = [
     "build_compiler_flags_probe_summary",
     "compute_efficiency_bounds",
     "detect_probe_anomalies",
+    "discover_sysfs_drm_devices",
     "discover_xpu_smi_devices",
     "detect_available_vcpus",
     "dispatch_lookup_from_args",
@@ -220,6 +248,7 @@ __all__ = [
     "read_json",
     "resolve_executable",
     "resolve_hw_reference_spec",
+    "resolve_dpcpp_host_compiler",
     "resolve_device_target",
     "resolve_candidate_build_jobs",
     "resolve_profiles_device_target",
@@ -230,6 +259,12 @@ __all__ = [
     "run_entries_with_benchmark",
     "run_entries_with_batch_benchmarks",
     "run_entries_with_streamk_example",
+    "run_entries_with_batch_weight_only_codegen",
+    "run_entries_with_weight_only_example",
+    "run_entries_with_weight_only_codegen",
+    "emit_weight_only_mixed_dtype_project",
+    "generated_weight_only_mixed_dtype_kernel_catalog",
+    "weight_only_mixed_dtype_candidates",
     "run_phase_a_probe",
     "score_exact_shape_kernel",
     "select_compiler_profile_id",

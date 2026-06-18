@@ -211,9 +211,11 @@ def execute_candidate_build_preflight_plans(build_plan, log_dir, shell_init="", 
     }
 
 
-def benchmark_batch_plan_by_kernel_id(build_plan):
+def benchmark_batch_plan_by_kernel_id(build_plan, successful_batch_ids=None):
     mapping = {}
     for plan in build_plan.get("batch_preflight_plans", []):
+        if successful_batch_ids is not None and plan.get("batch_id") not in successful_batch_ids:
+            continue
         for kernel_id in plan.get("selected_kernel_list", []):
             mapping[kernel_id] = plan
     return mapping
@@ -271,6 +273,15 @@ def run_entries_with_batch_benchmarks(entries, config_path, manifest_path, log_p
 
 
 def validate_candidate_auto_build_mode(args, dry_run_mode, probe_mode):
+    if (
+        getattr(args, "kernel_catalog_source", "") == "weight_only_codegen"
+        and not args.build_candidate_benchmark
+        and not dry_run_mode
+        and not args.skip_run
+    ):
+        raise ValueError(
+            "weight_only_codegen generates compile-time mixed-dtype executables, so --build-candidate-benchmark is required unless --skip-run or --dry-run is used."
+        )
     if not args.build_candidate_benchmark or dry_run_mode or args.skip_run or args.constraints_json:
         return
     if probe_mode not in {"auto", "run"}:

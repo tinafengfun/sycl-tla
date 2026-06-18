@@ -46,6 +46,7 @@ SYNC_FILES = [
     "tools/intel_gemm_profiler/device_target.py",
     "tools/intel_gemm_profiler/dispatch.py",
     "tools/intel_gemm_profiler/hw_specs.py",
+    "tools/intel_gemm_profiler/mixed_dtype_codegen.py",
     "tools/intel_gemm_profiler/prefilter.py",
     "tools/intel_gemm_profiler/phase_a.py",
     "tools/intel_gemm_profiler/runner.py",

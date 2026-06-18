@@ -112,6 +112,9 @@ def build_candidate_build_cmake_vars(candidate_space, build_config=None):
     if catalog_source == "layered_bmg_scheduler_expanded":
         cmake_vars["CUTLASS_BENCHMARK_EXHAUSTIVE_GEMM"] = "ON"
         cmake_vars["CUTLASS_BENCHMARK_EXHAUSTIVE_STREAMK"] = "ON"
+    if catalog_source == "weight_only_codegen":
+        cmake_vars["CUTLASS_ENABLE_EXAMPLES"] = "OFF"
+        cmake_vars["CUTLASS_ENABLE_BENCHMARKS"] = "OFF"
     if cmake_vars.get("DPCPP_SYCL_TARGET"):
         cmake_vars.pop("SYCL_INTEL_TARGET", None)
     return cmake_vars
@@ -121,11 +124,20 @@ def build_candidate_build_manifest(candidate_space, selected_kernel_batch_size=0
     selected_kernel_list = []
     seen_kernel_ids = set()
     variants = []
+    has_mixed_dtype_codegen = False
     for candidate in candidate_space["candidates"]:
         if candidate["runner"] == "benchmark" and candidate["kernel_id"] not in seen_kernel_ids:
             seen_kernel_ids.add(candidate["kernel_id"])
             selected_kernel_list.append(candidate["kernel_id"])
+        elif candidate["runner"] == "mixed_dtype_codegen" and candidate["kernel_id"] not in seen_kernel_ids:
+            has_mixed_dtype_codegen = True
+            seen_kernel_ids.add(candidate["kernel_id"])
+            selected_kernel_list.append(candidate["kernel_id"])
         variants.append(build_candidate_build_variant(candidate))
+
+    build_target = "cutlass_benchmarks_gemm_sycl"
+    if has_mixed_dtype_codegen and all(candidate["runner"] == "mixed_dtype_codegen" for candidate in candidate_space["candidates"]):
+        build_target = "weight_only_mixed_dtype_codegen_all"
 
     return {
         "schema_version": SCHEMA_VERSION,
@@ -144,7 +156,7 @@ def build_candidate_build_manifest(candidate_space, selected_kernel_batch_size=0
         "selected_kernel_batch_size": selected_kernel_batch_size,
         "selected_kernel_batches": build_selected_kernel_batches(selected_kernel_list, selected_kernel_batch_size),
         "cmake_config": {
-            "build_target": "cutlass_benchmarks_gemm_sycl",
+            "build_target": build_target,
             "cmake_vars": build_candidate_build_cmake_vars(candidate_space, build_config=build_config),
             "kernel_filter_cmake_var": "KERNEL_FILTER_FILE",
         },

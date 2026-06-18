@@ -6,7 +6,7 @@
 import re
 
 
-SCHEMA_VERSION = "1.2"
+SCHEMA_VERSION = "1.3"
 
 SCHEDULER_METADATA_FIELDS = [
     "scheduler_family",
@@ -238,6 +238,13 @@ CSV_FIELDS = [
     "runtime_stddev_ms",
     "warmup_iters",
     "measure_iters",
+    "workspace_bytes",
+    "input_bytes_per_buffer",
+    "input_pool_target_bytes",
+    "input_pool_buffers",
+    "fixed_vram_input",
+    "prebuilt_variants",
+    "workspace_reuse_enabled",
     "avg_tflops",
     "median_tflops",
     "avg_throughput",

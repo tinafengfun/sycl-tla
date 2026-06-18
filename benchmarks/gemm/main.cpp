@@ -20,9 +20,14 @@ int print_direct_result(std::string const& kernel, Result const& result) {
   std::cout << "median_tflops=" << result.tflops
             << " avg_runtime_ms=" << result.avg_runtime_ms
             << " total_runtime_ms=" << result.total_runtime_ms
+            << " input_mode=" << result.input_mode
+            << " workspace_bytes=" << result.workspace_bytes
             << " input_bytes_per_buffer=" << result.input_bytes_per_buffer
             << " input_pool_target_bytes=" << result.input_pool_target_bytes
-            << " pool_buffers=" << result.pool_buffers
+            << " input_pool_buffers=" << result.input_pool_buffers
+            << " fixed_vram_input=" << result.fixed_vram_input
+            << " prebuilt_variants=" << result.prebuilt_variants
+            << " workspace_reuse_enabled=" << result.workspace_reuse_enabled
             << " warmup_iters=" << result.warmup_iters
             << " measure_iters=" << result.measure_iters
             << " KERNEL=" << kernel

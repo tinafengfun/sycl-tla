@@ -16,12 +16,65 @@ from .analysis import (
     collect_scheduler_bruteforce_full_config_rows,
 )
 from .build_plan import (
+    candidate_build_commands,
     build_candidate_build_plan,
     detect_available_vcpus,
     resolve_candidate_build_jobs,
 )
 from .candidates import build_candidate_build_manifest
-from .utils import write_json
+from .mixed_dtype_codegen import emit_weight_only_mixed_dtype_project
+from .utils import shell_join, write_json
+
+
+def _resolve_mixed_dtype_codegen_executables(mixed_dtype_codegen_project, build_dir):
+    build_bin_dir = Path(build_dir).resolve() / "bin"
+    return {
+        source["kernel_id"]: str(build_bin_dir / source["benchmark_target"])
+        for source in mixed_dtype_codegen_project.get("generated_sources", [])
+    }
+
+
+def _resolve_batch_mixed_dtype_codegen_executables(build_manifest, batch_build_dir):
+    build_bin_dir = Path(batch_build_dir).resolve() / "bin"
+    benchmark_target_by_kernel_id = {
+        variant["kernel_id"]: variant["benchmark_target"]
+        for variant in build_manifest.get("variants", [])
+    }
+    return {
+        kernel_id: str(build_bin_dir / benchmark_target_by_kernel_id[kernel_id])
+        for kernel_id in benchmark_target_by_kernel_id
+    }
+
+
+def _retarget_batch_mixed_dtype_codegen_plan(
+    batch_plan,
+    batch_project,
+    build_manifest,
+):
+    batch_plan["source_dir"] = batch_project["project_dir"]
+    batch_plan["generated_project_manifest"] = batch_project["manifest_path"]
+    batch_plan["benchmark_exe"] = ""
+    batch_plan["generated_executables"] = {
+        kernel_id: path
+        for kernel_id, path in _resolve_batch_mixed_dtype_codegen_executables(
+            build_manifest,
+            batch_plan["build_dir"],
+        ).items()
+        if kernel_id in set(batch_plan.get("selected_kernel_list", []))
+    }
+    configure_command, build_command = candidate_build_commands(
+        batch_project["project_dir"],
+        batch_plan["build_dir"],
+        batch_plan["build_target"],
+        batch_plan["cmake_vars"],
+        build_parallelism=batch_plan.get("build_parallelism", 0),
+    )
+    batch_plan["configure_command"] = configure_command
+    batch_plan["build_command"] = build_command
+    batch_plan["configure_command_line"] = shell_join(configure_command)
+    batch_plan["build_command_line"] = shell_join(build_command)
+
+
 def prepare_candidate_artifacts(
     args,
     workspace,
@@ -58,6 +111,17 @@ def prepare_candidate_artifacts(
     build_dir = Path(args.benchmark_build_dir).resolve() if args.benchmark_build_dir else workspace / "build" / "candidate_benchmarks"
     googlebenchmark_dir = Path(args.googlebenchmark_dir).resolve() if args.googlebenchmark_dir else None
     googlebenchmark_build_dir = Path(args.googlebenchmark_build_dir).resolve() if args.googlebenchmark_build_dir else None
+    mixed_dtype_codegen_manifest_path = reports_dir / "mixed_dtype_codegen_project.json"
+    mixed_dtype_codegen_project = {}
+    if candidate_space.get("kernel_catalog", {}).get("catalog_source") == "weight_only_codegen":
+        cutlass_source_dir = source_dir
+        mixed_dtype_codegen_project = emit_weight_only_mixed_dtype_project(
+            workspace / "generated" / "mixed_dtype_codegen",
+            candidate_space["candidates"],
+            cutlass_source_dir=source_dir,
+        )
+        source_dir = Path(mixed_dtype_codegen_project["project_dir"]).resolve()
+        write_json(mixed_dtype_codegen_manifest_path, mixed_dtype_codegen_project)
     detected_vcpus = detect_vcpus_fn()
     candidate_build_workers = max(1, int(getattr(args, "candidate_build_parallelism", 1) or 1))
     aggregate_build_parallelism = detected_vcpus
@@ -73,6 +137,29 @@ def prepare_candidate_artifacts(
         build_parallelism=aggregate_build_parallelism,
         batch_build_parallelism=batch_build_parallelism,
     )
+    if mixed_dtype_codegen_project:
+        candidate_build_plan["benchmark_exe"] = ""
+        candidate_build_plan["generated_executables"] = _resolve_mixed_dtype_codegen_executables(
+            mixed_dtype_codegen_project,
+            build_dir,
+        )
+        for batch_plan in candidate_build_plan.get("batch_preflight_plans", []):
+            batch_candidates = [
+                candidate
+                for candidate in candidate_space["candidates"]
+                if candidate.get("kernel_id") in set(batch_plan.get("selected_kernel_list", []))
+            ]
+            batch_project = emit_weight_only_mixed_dtype_project(
+                workspace / "generated" / "mixed_dtype_codegen" / batch_plan["batch_id"],
+                batch_candidates,
+                cutlass_source_dir=cutlass_source_dir,
+            )
+            _retarget_batch_mixed_dtype_codegen_plan(
+                batch_plan,
+                batch_project,
+                build_manifest,
+            )
+        candidate_build_plan["generated_project_manifest"] = mixed_dtype_codegen_project["manifest_path"]
     write_json(candidate_build_plan_path, candidate_build_plan)
 
     regular_gemm_full_config_path = reports_dir / "regular_gemm_full_config.csv"
@@ -125,6 +212,7 @@ def prepare_candidate_artifacts(
         "candidate_build_plan_path": candidate_build_plan_path,
         "candidate_build_plan": candidate_build_plan,
         "candidate_build_workers": candidate_build_workers,
+        "mixed_dtype_codegen_manifest_path": mixed_dtype_codegen_manifest_path if mixed_dtype_codegen_project else None,
         "regular_gemm_full_config_path": regular_gemm_full_config_path,
         "regular_gemm_gap_scan_path": regular_gemm_gap_scan_path,
         "scheduler_bruteforce_full_config_path": scheduler_bruteforce_full_config_path,

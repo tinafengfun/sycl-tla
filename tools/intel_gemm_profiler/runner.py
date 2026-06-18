@@ -22,7 +22,14 @@ from .schemas import SCHEMA_VERSION
 from .utils import now_iso, resolve_executable, shell_join
 
 
-def collect_environment_metadata(shell_init, benchmark_exe, streamk_example_exe, cwd=None):
+def collect_environment_metadata(
+    shell_init,
+    benchmark_exe,
+    streamk_example_exe,
+    mixed_bf16_s8_example_exe="",
+    mixed_f16_s8_example_exe="",
+    cwd=None,
+):
     tracked_env = {}
     for name in ("ONEAPI_DEVICE_SELECTOR", "SYCL_PI_LEVEL_ZERO_USE_IMMEDIATE_COMMANDLISTS", "ZE_FLAT_DEVICE_HIERARCHY", "SYCL_PROGRAM_COMPILE_OPTIONS", "IGC_ExtraOCLOptions", "IGC_VectorAliasBBThreshold", "IGC_VISAOptions"):
         value = os.environ.get(name)
@@ -30,6 +37,8 @@ def collect_environment_metadata(shell_init, benchmark_exe, streamk_example_exe,
             tracked_env[name] = value
     benchmark_path = resolve_executable(benchmark_exe, cwd=cwd)
     streamk_path = resolve_executable(streamk_example_exe, cwd=cwd)
+    mixed_bf16_s8_path = resolve_executable(mixed_bf16_s8_example_exe, cwd=cwd)
+    mixed_f16_s8_path = resolve_executable(mixed_f16_s8_example_exe, cwd=cwd)
     return {
         "schema_version": SCHEMA_VERSION,
         "generated_at": now_iso(),
@@ -43,6 +52,10 @@ def collect_environment_metadata(shell_init, benchmark_exe, streamk_example_exe,
             "benchmark_available": bool(benchmark_path),
             "streamk_example_exe": str(streamk_path) if streamk_path else streamk_example_exe,
             "streamk_example_available": bool(streamk_path),
+            "mixed_bf16_s8_example_exe": str(mixed_bf16_s8_path) if mixed_bf16_s8_path else mixed_bf16_s8_example_exe,
+            "mixed_bf16_s8_example_available": bool(mixed_bf16_s8_path),
+            "mixed_f16_s8_example_exe": str(mixed_f16_s8_path) if mixed_f16_s8_path else mixed_f16_s8_example_exe,
+            "mixed_f16_s8_example_available": bool(mixed_f16_s8_path),
         },
         "effective_env": tracked_env,
     }
@@ -157,4 +170,120 @@ def run_entries_with_streamk_example(entries, logs_dir, exe, cwd=None, shell_ini
             raise RuntimeError(f"StreamK example subprocess failed with return code {result.returncode}. See {log_path}")
         rows.extend(parsed)
         commands.append(shell_join(command))
+    return rows, commands
+
+
+def parse_example_gemm_log(log_path, metadata_by_bm_name, run_id):
+    return parse_streamk_example_log(log_path, metadata_by_bm_name, run_id)
+
+
+def run_entries_with_weight_only_example(entries, logs_dir, exe, cwd=None, shell_init=None, timeout=None):
+    rows = []
+    commands = []
+    for entry in entries:
+        candidate = entry["candidate"]
+        shape = entry["shape"]
+        bm_name = entry["bm_name"]
+        metadata = {
+            bm_name: {
+                "shape_id": shape["shape_id"],
+                "candidate_id": candidate["candidate_id"],
+                "compiler_profile_id": candidate["compiler_profile_id"],
+                "stage": entry["stage"],
+                "attempt_index": entry["attempt_index"],
+                "layout": shape["layout"],
+                "dtype_a": shape["dtype_a"],
+                "dtype_b": shape["dtype_b"],
+                "dtype_c": shape["dtype_c"],
+                "dtype_d": shape.get("dtype_d", shape["dtype_c"]),
+                "dtype_acc": shape["dtype_acc"],
+                "m": shape["m"],
+                "n": shape["n"],
+                "k": shape["k"],
+                "batch_count": shape.get("batch_count", 1),
+                "kernel_name": candidate["kernel_name"],
+                "split_k": candidate.get("split_k", 1),
+            }
+        }
+        metadata[bm_name].update(row_result_metadata(candidate))
+        log_path = logs_dir / f"{bm_name}.log"
+        runtime_defaults = dict(candidate.get("runtime_defaults", {}))
+        runtime_defaults.update(shape.get("runtime_defaults", {}))
+        batch_count = shape.get("batch_count", runtime_defaults.get("batch_count", 1))
+        alpha = runtime_defaults.get("alpha", 1.0)
+        beta = runtime_defaults.get("beta", 0.0)
+        iterations = runtime_defaults.get("iterations", 20)
+        verify = runtime_defaults.get("verify", 1)
+        group_size = runtime_defaults.get("g", None)
+        mode = runtime_defaults.get("mode", None)
+        a_narrower = runtime_defaults.get("a_narrower", False)
+        command = [
+            exe,
+            f"--m={shape['m']}",
+            f"--n={shape['n']}",
+            f"--k={shape['k']}",
+            f"--l={batch_count}",
+            f"--alpha={alpha}",
+            f"--beta={beta}",
+            f"--iterations={iterations}",
+            f"--verify={verify}",
+        ]
+        if group_size is not None:
+            command.append(f"--g={group_size}")
+        if mode is not None:
+            command.append(f"--mode={mode}")
+        if a_narrower:
+            command.append("--a_narrower")
+        result, timed_out, timeout_reason = run_benchmark(command, log_path, cwd=cwd, shell_init=shell_init, timeout=timeout)
+        parsed = timeout_rows([entry], log_path, timeout_reason) if timed_out else parse_example_gemm_log(log_path, metadata, run_id=entry["stage"])
+        if result.returncode != 0 and not parsed:
+            raise RuntimeError(f"Weight-only mixed-dtype example subprocess failed with return code {result.returncode}. See {log_path}")
+        rows.extend(parsed)
+        commands.append(shell_join(command))
+    return rows, commands
+
+
+def run_entries_with_weight_only_codegen(entries, logs_dir, candidate_build_plan, cwd=None, shell_init=None, timeout=None):
+    generated_executables = candidate_build_plan.get("generated_executables", {})
+    rows = []
+    commands = []
+    for entry in entries:
+        kernel_id = entry["candidate"]["kernel_id"]
+        exe = generated_executables.get(kernel_id, "")
+        if not exe:
+            raise RuntimeError(f"Missing generated executable path for mixed-dtype codegen candidate {kernel_id}.")
+        entry_rows, entry_commands = run_entries_with_weight_only_example(
+            [entry],
+            logs_dir,
+            exe,
+            cwd=cwd,
+            shell_init=shell_init,
+            timeout=timeout,
+        )
+        rows.extend(entry_rows)
+        commands.extend(entry_commands)
+    return rows, commands
+
+
+def run_entries_with_batch_weight_only_codegen(entries, logs_dir, batch_plan_by_kernel_id, cwd=None, shell_init=None, timeout=None):
+    grouped = {}
+    for entry in entries:
+        kernel_id = entry["candidate"]["kernel_id"]
+        plan = batch_plan_by_kernel_id.get(kernel_id)
+        if plan is None:
+            raise ValueError(f"No batch preflight mixed-dtype codegen plan found for kernel '{kernel_id}'.")
+        grouped.setdefault(plan["batch_id"], {"plan": plan, "entries": []})["entries"].append(entry)
+    rows = []
+    commands = []
+    for batch_id, item in sorted(grouped.items()):
+        batch_rows, batch_commands = run_entries_with_weight_only_codegen(
+            item["entries"],
+            logs_dir,
+            item["plan"],
+            cwd=cwd,
+            shell_init=shell_init,
+            timeout=timeout,
+        )
+        rows.extend(batch_rows)
+        commands.extend(batch_commands)
     return rows, commands

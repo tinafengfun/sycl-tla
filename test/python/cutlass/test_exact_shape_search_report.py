@@ -13,6 +13,9 @@ from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
+sys.path.insert(0, str(REPO_ROOT / "tools"))
+from intel_gemm_profiler.exact_shape_report import repro as exact_shape_repro  # noqa: E402
+
 REPORT_SCRIPT = REPO_ROOT / "tools" / "exact_shape_search_report.py"
 GEN_MAIN_SCRIPT = REPO_ROOT / "tools" / "gen_main.py"
 
@@ -139,12 +142,49 @@ class TestExactShapeSearchReport(unittest.TestCase):
             )
 
             with (result_dir / "batch_0000_gpu0.csv").open("w", encoding="utf-8", newline="") as handle:
-                writer = csv.DictWriter(handle, fieldnames=["kernel", "tflops", "status", "gpu", "m", "n", "k"])
+                writer = csv.DictWriter(
+                    handle,
+                    fieldnames=[
+                        "kernel",
+                        "tflops",
+                        "avg_runtime_ms",
+                        "total_runtime_ms",
+                        "measure_iters",
+                        "warmup_iters",
+                        "input_mode",
+                        "workspace_bytes",
+                        "input_bytes_per_buffer",
+                        "input_pool_target_bytes",
+                        "input_pool_buffers",
+                        "fixed_vram_input",
+                        "prebuilt_variants",
+                        "workspace_reuse_enabled",
+                        "latency_source",
+                        "status",
+                        "gpu",
+                        "m",
+                        "n",
+                        "k",
+                    ],
+                )
                 writer.writeheader()
                 writer.writerow(
                     {
                         "kernel": "BmgGemmBF16BF16FP32_RRR_GemmExhaustive_128x128x64_SG4x8_ST2",
                         "tflops": "140.0",
+                        "avg_runtime_ms": "0.161000",
+                        "total_runtime_ms": "16.100000",
+                        "measure_iters": "100",
+                        "warmup_iters": "50",
+                        "input_mode": "rotating_vram_pool",
+                        "workspace_bytes": "8192",
+                        "input_bytes_per_buffer": "65536",
+                        "input_pool_target_bytes": "1073741824",
+                        "input_pool_buffers": "16",
+                        "fixed_vram_input": "0",
+                        "prebuilt_variants": "1",
+                        "workspace_reuse_enabled": "1",
+                        "latency_source": "reported",
                         "status": "OK",
                         "gpu": "0",
                         "m": "8192",
@@ -156,6 +196,19 @@ class TestExactShapeSearchReport(unittest.TestCase):
                     {
                         "kernel": "BmgGemmBF16BF16FP32_RCR_SplitK_256x128x64_SG8x4_ST2",
                         "tflops": "70.0",
+                        "avg_runtime_ms": "0.322000",
+                        "total_runtime_ms": "32.200000",
+                        "measure_iters": "100",
+                        "warmup_iters": "50",
+                        "input_mode": "rotating_vram_pool",
+                        "workspace_bytes": "16384",
+                        "input_bytes_per_buffer": "65536",
+                        "input_pool_target_bytes": "1073741824",
+                        "input_pool_buffers": "16",
+                        "fixed_vram_input": "0",
+                        "prebuilt_variants": "1",
+                        "workspace_reuse_enabled": "1",
+                        "latency_source": "reported",
                         "status": "OK",
                         "gpu": "0",
                         "m": "8192",
@@ -167,6 +220,19 @@ class TestExactShapeSearchReport(unittest.TestCase):
                     {
                         "kernel": "KernelTimeout",
                         "tflops": "0",
+                        "avg_runtime_ms": "",
+                        "total_runtime_ms": "",
+                        "measure_iters": "",
+                        "warmup_iters": "",
+                        "input_mode": "rotating_vram_pool",
+                        "workspace_bytes": "",
+                        "input_bytes_per_buffer": "",
+                        "input_pool_target_bytes": "",
+                        "input_pool_buffers": "",
+                        "fixed_vram_input": "",
+                        "prebuilt_variants": "",
+                        "workspace_reuse_enabled": "",
+                        "latency_source": "",
                         "status": "TIMEOUT",
                         "gpu": "0",
                         "m": "8192",
@@ -195,9 +261,10 @@ class TestExactShapeSearchReport(unittest.TestCase):
             self.assertEqual(summary["fastest5_latency"][0]["kernel"], "BmgGemmBF16BF16FP32_RRR_GemmExhaustive_128x128x64_SG4x8_ST2")
             self.assertEqual(summary["fastest5_rcr_latency"][0]["kernel"], "BmgGemmBF16BF16FP32_RCR_SplitK_256x128x64_SG8x4_ST2")
             self.assertEqual(summary["top5"][0]["kernel"], "BmgGemmBF16BF16FP32_RRR_GemmExhaustive_128x128x64_SG4x8_ST2")
-            self.assertEqual(summary["top5"][0]["latency_source"], "derived_from_tflops")
+            self.assertEqual(summary["top5"][0]["latency_source"], "reported")
             self.assertEqual(summary["fastest5_latency"][0]["measure_iters"], "100")
             self.assertIn("total_runtime_ms", summary["latency_stats"])
+            self.assertIn("workspace_bytes", summary["merged_fields"])
             self.assertIn("kernel_schedule", summary["merged_fields"])
             self.assertEqual(summary["run_meta"]["git_head"], "deadbeef")
             self.assertEqual(summary["manifest"]["batch_count"], 2)
@@ -222,9 +289,12 @@ class TestExactShapeSearchReport(unittest.TestCase):
                     "BmgGemmBF16BF16FP32_RCR_SplitK_256x128x64_SG8x4_ST2",
                 ],
             )
-            self.assertEqual(rows[0]["latency_source"], "derived_from_tflops")
-            self.assertNotEqual(rows[0]["avg_runtime_ms"], "")
-            self.assertNotEqual(rows[0]["total_runtime_ms"], "")
+            self.assertEqual(rows[0]["latency_source"], "reported")
+            self.assertEqual(rows[0]["input_mode"], "rotating_vram_pool")
+            self.assertEqual(rows[0]["workspace_bytes"], "8192")
+            self.assertEqual(rows[0]["input_pool_buffers"], "16")
+            self.assertEqual(rows[0]["prebuilt_variants"], "1")
+            self.assertEqual(rows[0]["workspace_reuse_enabled"], "1")
             self.assertEqual(rows[0]["kernel_schedule"], "KernelXe")
             self.assertEqual(rows[0]["allowed_runtime_sweeps"], "[\"m\", \"n\", \"k\"]")
 
@@ -237,6 +307,7 @@ class TestExactShapeSearchReport(unittest.TestCase):
             self.assertIn("BmgGemmBF16BF16FP32_RCR_SplitK_256x128x64_SG8x4_ST2", top5_cfg)
             self.assertIn("--split_k_slices=1", top5_cfg)
             top1_script = (report_dir / "8192_384_3584" / "top1_repro.sh").read_text(encoding="utf-8")
+            self.assertIn("export CUTLASS_BENCHMARK_INPUT_MODE=rotating_vram_pool", top1_script)
             self.assertIn("--config_file=\"$CONFIG_FILE\"", top1_script)
             self.assertIn("KERNEL_FILTER_FILE=\"$FILTER_FILE\"", top1_script)
             self.assertIn('PATH="/opt/intel/oneapi/compiler/2025.3/bin:$PATH"', top1_script)
@@ -278,6 +349,40 @@ class TestExactShapeSearchReport(unittest.TestCase):
             )
             self.assertEqual(top1_bundle_meta["run_meta_subset"]["git_head"], "deadbeef")
 
+    def test_write_repro_script_exports_fixed_buffer_mode(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            script_path = tmp / "top1_repro.sh"
+            filter_path = tmp / "kernel_filter.txt"
+            config_path = tmp / "repro.cfg"
+            manifest_path = tmp / "metadata.json"
+            exact_shape_repro.write_repro_script(
+                script_path,
+                label="top1",
+                shape_tag="8192_384_3584",
+                rows=[{"gpu": "7"}],
+                run_meta={
+                    "repo_root": "/tmp/fake-repo",
+                    "perf_env_ONEAPI_DEVICE_SELECTOR": "level_zero:gpu",
+                    "perf_env_SYCL_PROGRAM_COMPILE_OPTIONS": "-ze-opt-large-register-file",
+                    "perf_env_IGC_VectorAliasBBThreshold": "10000",
+                    "perf_env_IGC_ExtraOCLOptions": "--cl-intel-256-GRF-per-thread",
+                },
+                benchmark_config={
+                    "input_mode": "fixed_buffer",
+                    "fixed_vram_input": True,
+                    "workspace_reuse_enabled": True,
+                    "phase_timing_enabled": False,
+                },
+                filter_path=filter_path,
+                config_path=config_path,
+                manifest_path=manifest_path,
+            )
+            script = script_path.read_text(encoding="utf-8")
+            self.assertIn("export CUTLASS_BENCHMARK_INPUT_MODE=fixed_buffer", script)
+            self.assertIn("export CUTLASS_BENCHMARK_FIXED_VRAM_INPUT=1", script)
+            self.assertIn("export CUTLASS_BENCHMARK_REUSE_WORKSPACE=1", script)
+
     def test_gen_main_emits_latency_fields(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             manifest = Path(tmpdir) / "manifest.txt"
@@ -291,6 +396,8 @@ class TestExactShapeSearchReport(unittest.TestCase):
             self.assertIn("total_runtime_ms", text)
             self.assertIn("measure_iters", text)
             self.assertIn("warmup_iters", text)
+            self.assertIn("kernel_file", text)
+            self.assertIn("workspace_reuse_enabled", text)
             self.assertIn("opts.split_k_slices = 0", text)
             self.assertIn("cmd.get_cmd_line_argument(\"l\", opts.l, 1)", text)
 

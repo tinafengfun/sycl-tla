@@ -14,15 +14,65 @@ from .utils import now_iso, read_json, write_json
 
 
 PRIORITY_STATE_SCHEMA_VERSION = "exact-shape-priority-v1"
-DEFAULT_PRIORITY_STRATEGY = "b70_learned_sg_tiers_v1"
+DEFAULT_PRIORITY_STRATEGY = "b70_learned_sg_tiers_v3"
 DEFAULT_PRIORITY_STATE_FILENAME = "exact_shape_priority_state.json"
 WORKGROUP_SUBGROUP_WIDTH = 32
 HARD_FILTER_SUBGROUPS = {"1x4", "1x8"}
 LOW_PRIORITY_SCHEDULER_SUBGROUP = "2x8"
 LOW_PRIORITY_GEMM_SUBGROUP = "2x4"
 TIER_ORDER = {"high": 0, "normal": 1, "low": 2}
+TIMEOUT_HARD_FILTER_FAMILIES = (
+    {
+        "name": "timeout_streamk_512x128x64_sg4x8_rcr",
+        "scheduler": {"streamk"},
+        "layouts": {"rcr"},
+        "tile": (512, 128, 64),
+        "subgroup": "4x8",
+        "stages": {1, 2, 3},
+    },
+    {
+        "name": "timeout_streamk_512x128x64_sg8x4_rcr",
+        "scheduler": {"streamk"},
+        "layouts": {"rcr"},
+        "tile": (512, 128, 64),
+        "subgroup": "8x4",
+        "stages": {2, 3},
+    },
+)
+TIMEOUT_LOW_PRIORITY_FAMILIES = (
+    {
+        "name": "timeout_prone_64x512x64_sg8x2",
+        "scheduler": {"gemm", "data_parallel", "splitk"},
+        "tile": (64, 512, 64),
+        "subgroup": "8x2",
+        "stages": {1, 2, 3},
+    },
+    {
+        "name": "timeout_prone_gemm_512x64x64_sg4x4",
+        "scheduler": {"gemm"},
+        "tile": (512, 64, 64),
+        "subgroup": "4x4",
+        "stages": {3},
+    },
+    {
+        "name": "timeout_prone_gemm_512x256x64_sg8x4",
+        "scheduler": {"gemm"},
+        "tile": (512, 256, 64),
+        "subgroup": "8x4",
+        "stages": set(),
+    },
+)
 
 BUCKET_PRIORS = {
+    "tiny_n": {
+        "scheduler": {"gemm": 3.5, "data_parallel": 1.25, "splitk": 1.0, "streamk": 0.25},
+        "wg": {512: 2.0, 1024: 2.0},
+        "tile_k": {64: 2.5, 32: 1.0},
+        "stages": {1: 2.0, 2: 1.5, 3: 0.5},
+        "subgroup": {"8x4": 2.5, "4x4": 2.25, "4x8": 1.5, "2x8": 1.25, "8x2": 0.5},
+        "orientation": {"balanced": 2.0, "n_wide": 1.0, "m_wide": 0.5},
+        "out_per_work_item_target": 32.0,
+    },
     "small_shape": {
         "scheduler": {"gemm": 3.0, "data_parallel": 1.5, "splitk": 1.25, "streamk": 0.5},
         "wg": {512: 2.5, 1024: 1.0},
@@ -114,6 +164,8 @@ def _shape_tuple(shape):
 
 def classify_exact_shape_bucket(shape):
     m, n, k = _shape_tuple(shape)
+    if n <= 384:
+        return "tiny_n"
     if m <= 4096 and n <= 2048:
         return "small_shape"
     if n <= 512 and m >= 4096:
@@ -192,6 +244,21 @@ def exact_shape_thread_wave_proxy(shape, entry, hw_spec):
     return total_tiles / concurrent_wg
 
 
+def exact_shape_wave_fill_efficiency(shape, entry, hw_spec):
+    m, n, _ = _shape_tuple(shape)
+    tile_m = int(entry.get("tile_m", 0) or 0)
+    tile_n = int(entry.get("tile_n", 0) or 0)
+    if tile_m <= 0 or tile_n <= 0:
+        return 0.0
+    total_tiles = math.ceil(m / tile_m) * math.ceil(n / tile_n)
+    sg_per_wg = exact_shape_workgroup_subgroups(entry)
+    concurrent_sgs_per_xe_core = max(int(hw_spec.get("concurrent_sgs_per_xe_core_256grf", 8)), 1)
+    xe_cores = max(int(hw_spec.get("xe_cores", 32)), 1)
+    concurrent_wg = max((xe_cores * concurrent_sgs_per_xe_core) / max(sg_per_wg, 1), 1.0)
+    waves = max(math.ceil(total_tiles / concurrent_wg), 1)
+    return total_tiles / float(waves * concurrent_wg)
+
+
 def _feature_keys(entry):
     return [
         f"scheduler:{exact_shape_scheduler_family(entry)}",
@@ -221,7 +288,71 @@ def _bucket_bonus(priors, category, key):
     return float(priors.get(category, {}).get(key, 0.0))
 
 
+def _refer_seed_match(entry, shape):
+    m, n, _ = _shape_tuple(shape)
+    if exact_shape_scheduler_family(entry) != "gemm":
+        return None
+    tile = (
+        int(entry.get("tile_m", 0) or 0),
+        int(entry.get("tile_n", 0) or 0),
+        int(entry.get("tile_k", 0) or 0),
+    )
+    subgroup = exact_shape_subgroup(entry)
+    stages = int(entry.get("stages", 0) or 0)
+    if n <= 384 and m > 256:
+        if m >= 12288 and tile == (96, 128, 64) and subgroup == "4x4":
+            return "refer_tiny_n_cfg16", 4.75 + (0.5 if stages == 2 else 0.0)
+        if m >= 6144 and tile == (128, 128, 64) and subgroup == "4x4":
+            return "refer_tiny_n_cfg10", 4.75 + (1.0 if stages == 1 else 0.0)
+        if m >= 3072 and tile == (128, 128, 64) and subgroup == "8x4":
+            return "refer_tiny_n_cfg11", 4.75 + (0.5 if stages == 2 else 0.0)
+        if tile == (256, 192, 32) and subgroup == "8x4":
+            return "refer_tiny_n_cfg18", 4.5 + (0.5 if stages == 2 else 0.0)
+    if m <= 64:
+        if n <= 3072 and tile == (64, 128, 64) and subgroup == "2x4":
+            return "refer_small_m_64x128", 2.0
+        if n > 3072 and tile == (64, 256, 64) and subgroup == "2x8":
+            return "refer_small_m_64x256", 2.0
+    if m <= 128:
+        if n <= 3072 and tile == (128, 128, 64) and subgroup == "2x8":
+            return "refer_small_m_128x128", 2.0
+        if n > 3072 and tile == (128, 256, 64) and subgroup == "4x8":
+            return "refer_small_m_128x256", 2.0
+    if tile == (256, 256, 32) and subgroup == "8x4":
+        return "refer_default_256x256", 1.5
+    return None
+
+
+def _timeout_family_match(entry, families):
+    scheduler = exact_shape_scheduler_family(entry)
+    subgroup = exact_shape_subgroup(entry)
+    tile = (
+        int(entry.get("tile_m", 0) or 0),
+        int(entry.get("tile_n", 0) or 0),
+        int(entry.get("tile_k", 0) or 0),
+    )
+    stages = int(entry.get("stages", 0) or 0)
+    layout = str(entry.get("layout", "")).strip().lower()
+    for family in families:
+        if scheduler not in family["scheduler"]:
+            continue
+        if tile != family["tile"]:
+            continue
+        if subgroup != family["subgroup"]:
+            continue
+        if family.get("layouts") and layout not in family["layouts"]:
+            continue
+        if family.get("stages") and stages not in family["stages"]:
+            continue
+        return family["name"]
+    return ""
+
+
 def _preferred_high_priority_subgroups(bucket, scheduler):
+    if bucket == "tiny_n":
+        if scheduler == "gemm":
+            return {"8x4", "4x4", "4x8"}
+        return {"8x2", "8x4"}
     if bucket == "small_shape":
         if scheduler == "gemm":
             return {"8x2", "4x4", "4x8"}
@@ -245,10 +376,37 @@ def classify_exact_shape_priority_rule(entry, shape):
     bucket = classify_exact_shape_bucket(shape)
     scheduler = exact_shape_scheduler_family(entry)
     subgroup = exact_shape_subgroup(entry)
+    timeout_filter = _timeout_family_match(entry, TIMEOUT_HARD_FILTER_FAMILIES)
+    timeout_low_priority = _timeout_family_match(entry, TIMEOUT_LOW_PRIORITY_FAMILIES)
+    refer_seed = _refer_seed_match(entry, shape)
+    if timeout_filter:
+        return {
+            "tier": "filtered",
+            "reason": f"timeout_family_blacklist:{timeout_filter}",
+            "bucket": bucket,
+            "scheduler": scheduler,
+            "subgroup": subgroup,
+        }
     if subgroup in HARD_FILTER_SUBGROUPS:
         return {
             "tier": "filtered",
             "reason": f"hard_filter_subgroup:{subgroup}",
+            "bucket": bucket,
+            "scheduler": scheduler,
+            "subgroup": subgroup,
+        }
+    if timeout_low_priority:
+        return {
+            "tier": "low",
+            "reason": f"timeout_family_probation:{timeout_low_priority}",
+            "bucket": bucket,
+            "scheduler": scheduler,
+            "subgroup": subgroup,
+        }
+    if refer_seed is not None:
+        return {
+            "tier": "high",
+            "reason": f"refer_seed:{refer_seed[0]}",
             "bucket": bucket,
             "scheduler": scheduler,
             "subgroup": subgroup,
@@ -303,11 +461,14 @@ def score_exact_shape_kernel(entry, shape, hw_spec=None, state=None):
     target_out = float(priors.get("out_per_work_item_target", 48.0))
     out_bonus = max(0.0, 2.5 - abs(out_per_wi - target_out) / 16.0)
     wave_proxy = exact_shape_thread_wave_proxy(shape, entry, hw)
+    wave_fill_efficiency = exact_shape_wave_fill_efficiency(shape, entry, hw)
     wave_penalty = math.log2(max(wave_proxy, 1.0)) * 0.85
     tier_rule = classify_exact_shape_priority_rule(entry, shape)
+    refer_seed = _refer_seed_match(entry, shape)
     score = 0.0
     score += analysis.get("max_expected_efficiency", 0.0) * 12.0
     score += analysis.get("wave_efficiency", 0.0) * 4.0
+    score += wave_fill_efficiency * 3.0
     score += analysis.get("tile_efficiency", 0.0) * 2.0
     score += analysis.get("cross_xe_core_penalty", 0.0) * 2.0
     score += _bucket_bonus(priors, "scheduler", scheduler)
@@ -318,6 +479,8 @@ def score_exact_shape_kernel(entry, shape, hw_spec=None, state=None):
     score += _bucket_bonus(priors, "orientation", orientation)
     score += out_bonus
     score += _learned_bonus(entry, bucket, learning_state)
+    if refer_seed is not None:
+        score += refer_seed[1]
     score -= wave_penalty
     score -= max(analysis.get("xe_cores_per_wg", 1) - 1, 0) * 1.5
     if tier_rule["tier"] == "high":
@@ -335,10 +498,12 @@ def score_exact_shape_kernel(entry, shape, hw_spec=None, state=None):
         "workgroup_size": wg,
         "out_per_work_item": out_per_wi,
         "wave_proxy": wave_proxy,
+        "wave_fill_efficiency": wave_fill_efficiency,
         "analysis": analysis,
         "tier": tier_rule["tier"],
         "tier_reason": tier_rule["reason"],
         "subgroup": subgroup,
+        "refer_seed": "" if refer_seed is None else refer_seed[0],
     }
 
 
@@ -361,7 +526,9 @@ def prioritize_exact_shape_kernels(entries, shapes, hw_spec=None, state=None, to
         ranked_entry["priority_scheduler"] = primary["scheduler"]
         ranked_entry["priority_subgroup"] = primary["subgroup"]
         ranked_entry["priority_wave_proxy"] = sum(item["wave_proxy"] for item in shape_scores) / len(shape_scores)
+        ranked_entry["priority_wave_fill"] = sum(item["wave_fill_efficiency"] for item in shape_scores) / len(shape_scores)
         ranked_entry["priority_out_per_work_item"] = sum(item["out_per_work_item"] for item in shape_scores) / len(shape_scores)
+        ranked_entry["priority_refer_seed"] = primary["refer_seed"]
         tier_ranks = [TIER_ORDER.get(item["tier"], len(TIER_ORDER)) for item in shape_scores if item["tier"] != "filtered"]
         if not tier_ranks:
             ranked_entry["priority_tier"] = "filtered"
@@ -413,6 +580,7 @@ def prioritize_exact_shape_kernels(entries, shapes, hw_spec=None, state=None, to
                 "priority_scheduler": entry["priority_scheduler"],
                 "priority_tier": entry["priority_tier"],
                 "priority_tier_reason": entry["priority_tier_reason"],
+                "priority_refer_seed": entry["priority_refer_seed"],
                 "tile_m": entry.get("tile_m", 0),
                 "tile_n": entry.get("tile_n", 0),
                 "tile_k": entry.get("tile_k", 0),
@@ -420,6 +588,7 @@ def prioritize_exact_shape_kernels(entries, shapes, hw_spec=None, state=None, to
                 "sg_n": entry.get("sg_n", 0),
                 "stages": entry.get("stages", 0),
                 "priority_wave_proxy": entry["priority_wave_proxy"],
+                "priority_wave_fill": entry["priority_wave_fill"],
             }
             for entry in ranked[:top_k]
         ],

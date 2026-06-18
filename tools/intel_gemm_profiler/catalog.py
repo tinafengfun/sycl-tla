@@ -12,6 +12,7 @@ from .catalog_layered import (
     generated_layered_bmg_kernel_catalog,
     generated_layered_bmg_scheduler_expanded_kernel_catalog,
 )
+from .mixed_dtype_codegen import generated_weight_only_mixed_dtype_kernel_catalog
 from .catalog_space import (
     BENCHMARK_STREAMK_TILE_SHAPES,
     EXPANDED_GEMM_TILE_SHAPES,
@@ -72,6 +73,7 @@ def load_persisted_kernel_catalog(path=DEFAULT_KERNEL_CATALOG_PATH):
             normalize_benchmark_streamk_splitk(entry)
             apply_epilogue_metadata(entry)
             apply_scheduler_metadata(entry)
+        catalog["kernels"].extend(generated_level0_kernel_catalog()["kernels"])
         catalog["kernels"] = dedupe_kernel_entries(catalog.get("kernels", []))
         return catalog
     return generated_level0_kernel_catalog()
@@ -84,6 +86,7 @@ def build_kernel_catalog(
     catalog_source="persisted",
     generator_arch="bmg",
     generator_instantiation_level=0,
+    constraints=None,
 ):
     if catalog_source == "persisted":
         source_catalog = load_persisted_kernel_catalog(catalog_path)
@@ -102,6 +105,10 @@ def build_kernel_catalog(
         from .constraints import default_constraints
 
         source_catalog = generated_layered_bmg_scheduler_expanded_kernel_catalog(default_constraints())
+    elif catalog_source == "weight_only_codegen":
+        from .constraints import default_constraints
+
+        source_catalog = generated_weight_only_mixed_dtype_kernel_catalog(constraints or default_constraints())
     else:
         raise ValueError(f"Unsupported kernel catalog source: {catalog_source}")
     selected_dtypes = set(dtypes) if dtypes is not None else None

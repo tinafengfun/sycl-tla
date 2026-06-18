@@ -446,6 +446,59 @@ def unsupported_true_bf16_streamk_example(kernel_suffix, streamk_mode, split_k):
     }
 
 
+def weight_only_mixed_dtype_example_candidates():
+    return {
+        "bf16_s8": [
+            {
+                "kernel_name": "02_bmg_gemm_bf16_s8_bf16",
+                "layout": "rrr",
+                "dtype_a": "bf16",
+                "dtype_b": "s8",
+                "dtype_c": "f32",
+                "dtype_d": "f32",
+                "dtype_acc": "f32",
+                "tile_m": 256,
+                "tile_n": 256,
+                "tile_k": 32,
+                "sg_m": 8,
+                "sg_n": 4,
+                "stages": 3,
+                "split_k": 1,
+                "runner": "mixed_bf16_s8_example",
+                "source": "weight_only_mixed_dtype_example",
+                "example_family": "02_bmg_gemm_mixed_dtype",
+                "quant_mode": "weight_only_int8",
+                "scale_mode": "groupwise",
+                "benchmark_target": "02_bmg_gemm_bf16_s8_bf16",
+            }
+        ],
+        "f16_s8": [
+            {
+                "kernel_name": "02_bmg_gemm_f16_s8_f16_tensorwise",
+                "layout": "rrr",
+                "dtype_a": "f16",
+                "dtype_b": "s8",
+                "dtype_c": "f32",
+                "dtype_d": "f32",
+                "dtype_acc": "f32",
+                "tile_m": 256,
+                "tile_n": 256,
+                "tile_k": 32,
+                "sg_m": 8,
+                "sg_n": 4,
+                "stages": 2,
+                "split_k": 1,
+                "runner": "mixed_f16_s8_example",
+                "source": "weight_only_mixed_dtype_example",
+                "example_family": "02_bmg_gemm_mixed_dtype",
+                "quant_mode": "weight_only_int8",
+                "scale_mode": "tensorwise",
+                "benchmark_target": "02_bmg_gemm_f16_s8_f16_tensorwise",
+            }
+        ],
+    }
+
+
 SEED_KERNELS = {
     "bf16": [
         {"kernel_name": "BmgGemmBF16BF16FP32_RRR_TileShape_512_256_32", "layout": "rrr", "dtype_a": "bf16", "dtype_b": "bf16", "dtype_c": "f32", "dtype_acc": "f32", "tile_m": 512, "tile_n": 256, "tile_k": 32, "sg_m": 8, "sg_n": 4, "stages": 2, "split_k": 1},
@@ -480,6 +533,7 @@ SEED_KERNELS = {
     "tf32": [
         *benchmark_streamk_tile_candidates("BmgGemmTF32TF32FP32", "tf32", "tf32", "f32", "f32"),
     ],
+    **weight_only_mixed_dtype_example_candidates(),
 }
 
 
@@ -511,7 +565,16 @@ def kernel_catalog_entry(dtype, seed):
     entry.setdefault("runner", "benchmark")
     entry["kernel_id"] = seed["kernel_name"]
     entry.setdefault("instantiation_level", 0)
-    entry["benchmark_target"] = "cutlass_benchmarks_gemm_sycl" if entry["runner"] == "benchmark" else "03_bmg_gemm_streamk"
+    if entry["runner"] == "benchmark":
+        entry["benchmark_target"] = "cutlass_benchmarks_gemm_sycl"
+    elif entry["runner"] == "streamk_example":
+        entry.setdefault("benchmark_target", "03_bmg_gemm_streamk")
+    elif entry["runner"] == "mixed_bf16_s8_example":
+        entry.setdefault("benchmark_target", "02_bmg_gemm_bf16_s8_bf16")
+    elif entry["runner"] == "mixed_f16_s8_example":
+        entry.setdefault("benchmark_target", "02_bmg_gemm_f16_s8_f16_tensorwise")
+    else:
+        entry.setdefault("benchmark_target", entry["runner"])
     entry["grf_mode"] = 256
     entry["ilp_class"] = ilp_class(entry)
     entry["streamk_mode"] = entry.get("streamk_mode", "")

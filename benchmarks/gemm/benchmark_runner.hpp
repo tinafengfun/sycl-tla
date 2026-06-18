@@ -63,6 +63,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstring>
 #include <benchmark/benchmark.h>
 #include <cmath>
 #include <cstdlib>
@@ -75,6 +76,27 @@
 using namespace cute;
 
 namespace cutlass::benchmark {
+
+struct ReusableWorkspaceAllocation {
+  device_memory::allocation<uint8_t> storage;
+  std::size_t capacity = 0;
+
+  uint8_t* ensure(std::size_t required_bytes) {
+    if (required_bytes == 0) {
+      return nullptr;
+    }
+    if (capacity < required_bytes) {
+      storage.reset(required_bytes);
+      capacity = required_bytes;
+    }
+    return storage.get();
+  }
+};
+
+inline ReusableWorkspaceAllocation& reusable_workspace_allocation() {
+  static ReusableWorkspaceAllocation workspace;
+  return workspace;
+}
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -508,9 +530,14 @@ struct BenchmarkRunnerGemm {
     double tflops = 0.0;
     double avg_runtime_ms = 0.0;
     double total_runtime_ms = 0.0;
+    std::string input_mode = "rotating_vram_pool";
+    double workspace_bytes = 0.0;
     double input_bytes_per_buffer = 0.0;
     double input_pool_target_bytes = 0.0;
-    int pool_buffers = 0;
+    int input_pool_buffers = 0;
+    int fixed_vram_input = 0;
+    int prebuilt_variants = 0;
+    int workspace_reuse_enabled = 0;
     int warmup_iters = 0;
     int measure_iters = 0;
   };
@@ -620,8 +647,39 @@ struct BenchmarkRunnerGemm {
 
   BenchmarkRunnerGemm() : seed(0) {};
 
+  static std::string canonical_input_mode(std::string mode) {
+    if (mode.empty() || mode == "rotating_vram_pool") {
+      return "rotating_vram_pool";
+    }
+    if (mode == "fixed_buffer" || mode == "fixed_vram_input") {
+      return "fixed_buffer";
+    }
+    return "rotating_vram_pool";
+  }
+
+  static std::string input_mode_name() {
+    if (const char* mode = std::getenv("CUTLASS_BENCHMARK_INPUT_MODE")) {
+      if (mode[0] != '\0') {
+        return canonical_input_mode(mode);
+      }
+    }
+    if (const char* legacy = std::getenv("CUTLASS_BENCHMARK_FIXED_VRAM_INPUT")) {
+      if (legacy[0] != '\0' && legacy[0] != '0') {
+        return "fixed_buffer";
+      }
+    }
+    return "rotating_vram_pool";
+  }
+
   static bool use_fixed_vram_input() {
-    return std::getenv("CUTLASS_BENCHMARK_FIXED_VRAM_INPUT") != nullptr;
+    return input_mode_name() == "fixed_buffer";
+  }
+
+  static bool workspace_reuse_requested() {
+    if (const char* value = std::getenv("CUTLASS_BENCHMARK_REUSE_WORKSPACE")) {
+      return std::strcmp(value, "0") != 0 && std::strcmp(value, "false") != 0 && std::strcmp(value, "FALSE") != 0;
+    }
+    return true;
   }
 
   static bool use_prebuilt_variants() {
@@ -713,8 +771,10 @@ struct BenchmarkRunnerGemm {
       const ProblemShapeType& problem_size,
       const GEMMOptions& options,
       const KernelHardwareInfo& hw_info,
+      std::size_t* workspace_bytes_out,
       ErrorHandler&& on_error) const {
     int variant_count = std::max(count, 1);
+    std::size_t max_workspace_bytes = 0;
     variants.clear();
     variants.reserve(variant_count);
 
@@ -725,6 +785,7 @@ struct BenchmarkRunnerGemm {
         return false;
       }
       size_t workspace_size = Gemm::get_workspace_size(variant.arguments);
+      max_workspace_bytes = std::max(max_workspace_bytes, workspace_size);
       try {
         variant.workspace.reset(workspace_size);
       } catch (std::exception const& e) {
@@ -740,6 +801,9 @@ struct BenchmarkRunnerGemm {
         return false;
       }
       variants.emplace_back(std::move(variant));
+    }
+    if (workspace_bytes_out) {
+      *workspace_bytes_out = max_workspace_bytes;
     }
     return true;
   }
@@ -1217,17 +1281,24 @@ struct BenchmarkRunnerGemm {
     device_memory::allocation<uint8_t> workspace;
     std::vector<PreparedVariant> prepared_variants;
     bool prebuilt_variants = use_prebuilt_variants();
+    std::size_t workspace_bytes = 0;
+    bool workspace_reuse_enabled = workspace_reuse_requested() && !prebuilt_variants;
 
     if (prebuilt_variants) {
-      if (!prepare_variants(prepared_variants, problem_size, options, hw_info, [&](char const* message) {
+      if (!prepare_variants(prepared_variants, problem_size, options, hw_info, &workspace_bytes, [&](char const* message) {
             state.SkipWithError(message);
           })) {
         return;
       }
     } else {
       size_t workspace_size = Gemm::get_workspace_size(arguments);
+      workspace_bytes = workspace_size;
       try {
-        workspace.reset(workspace_size);
+        if (workspace_reuse_enabled) {
+          reusable_workspace_allocation().ensure(workspace_size);
+        } else {
+          workspace.reset(workspace_size);
+        }
       } catch (std::exception const &e) {
         state.SkipWithError(e.what());
       }
@@ -1235,7 +1306,8 @@ struct BenchmarkRunnerGemm {
       if (gemm_op.can_implement(arguments) != cutlass::Status::kSuccess)
         state.SkipWithError("GEMM unable to implement given args.");
 
-      if (gemm_op.initialize(arguments, workspace.get()) != cutlass::Status::kSuccess)
+      uint8_t* workspace_ptr = (workspace_reuse_enabled && workspace_bytes > 0) ? reusable_workspace_allocation().storage.get() : workspace.get();
+      if (gemm_op.initialize(arguments, workspace_ptr) != cutlass::Status::kSuccess)
         state.SkipWithError("GEMM failed to initialize.");
     }
 
@@ -1270,10 +1342,14 @@ struct BenchmarkRunnerGemm {
     state.counters["alpha"] = options.alpha;
     state.counters["beta"] = options.beta;
     state.counters["split_k_slices"] = options.split_k_slices > 0 ? options.split_k_slices : 1;
+    state.counters["workspace_bytes"] = static_cast<double>(workspace_bytes);
+    state.counters["workspace_reuse_enabled"] = workspace_reuse_enabled ? 1.0 : 0.0;
     state.counters["input_pool_target_bytes"] = static_cast<double>(kRandomInputPoolBytes);
     state.counters["input_bytes_per_buffer"] = static_cast<double>(input_bytes_per_buffer);
     state.counters["input_pool_buffers"] = count;
     state.counters["input_pool_bytes"] = state.counters["input_bytes_per_buffer"] * count;
+    state.counters["fixed_vram_input"] = use_fixed_vram_input() ? 1.0 : 0.0;
+    state.counters["prebuilt_variants"] = prebuilt_variants ? 1.0 : 0.0;
 
     std::stringstream extra_label;
     if constexpr (cute::size<0>(StrideA{}) == 1) {
@@ -1321,7 +1397,8 @@ struct BenchmarkRunnerGemm {
           state.SkipWithError(scheduler_error);
           return;
         }
-        if (gemm_op.update(arguments, workspace.get()) != cutlass::Status::kSuccess) {
+        uint8_t* workspace_ptr = (workspace_reuse_enabled && workspace_bytes > 0) ? reusable_workspace_allocation().storage.get() : workspace.get();
+        if (gemm_op.update(arguments, workspace_ptr) != cutlass::Status::kSuccess) {
           state.SkipWithError("GEMM failed to update warmup buffers.");
           return;
         }
@@ -1344,7 +1421,8 @@ struct BenchmarkRunnerGemm {
           state.SkipWithError(scheduler_error);
           return false;
         }
-        if (gemm_op.update(arguments, workspace.get()) != cutlass::Status::kSuccess) {
+        uint8_t* workspace_ptr = (workspace_reuse_enabled && workspace_bytes > 0) ? reusable_workspace_allocation().storage.get() : workspace.get();
+        if (gemm_op.update(arguments, workspace_ptr) != cutlass::Status::kSuccess) {
           state.SkipWithError("GEMM failed to update measured buffers.");
           return false;
         }
@@ -1472,23 +1550,31 @@ private:
     device_memory::allocation<uint8_t> workspace;
     std::vector<PreparedVariant> prepared_variants;
     bool prebuilt_variants = use_prebuilt_variants();
+    std::size_t workspace_bytes = 0;
+    bool workspace_reuse_enabled = workspace_reuse_requested() && !prebuilt_variants;
     if (prebuilt_variants) {
-      if (!prepare_variants(prepared_variants, problem_size, options, hw_info, [&](char const* message) {
+      if (!prepare_variants(prepared_variants, problem_size, options, hw_info, &workspace_bytes, [&](char const* message) {
             std::cerr << "[DIRECT_FAIL] " << message << std::endl;
           })) {
         return {};
       }
     } else {
       size_t ws = Gemm::get_workspace_size(arguments);
+      workspace_bytes = ws;
       try {
-        workspace.reset(ws);
+        if (workspace_reuse_enabled) {
+          reusable_workspace_allocation().ensure(ws);
+        } else {
+          workspace.reset(ws);
+        }
       } catch (std::exception const& e) {
         return direct_fail(e.what());
       }
       if (gemm_op.can_implement(arguments) != cutlass::Status::kSuccess) {
         return direct_fail("GEMM unable to implement given args.");
       }
-      if (gemm_op.initialize(arguments, workspace.get()) != cutlass::Status::kSuccess) {
+      uint8_t* workspace_ptr = (workspace_reuse_enabled && workspace_bytes > 0) ? reusable_workspace_allocation().storage.get() : workspace.get();
+      if (gemm_op.initialize(arguments, workspace_ptr) != cutlass::Status::kSuccess) {
         return direct_fail("GEMM failed to initialize.");
       }
     }
@@ -1515,7 +1601,8 @@ private:
           std::cerr << "[DIRECT_FAIL] " << scheduler_error << std::endl;
           return {};
         }
-        if (gemm_op.update(arguments, workspace.get()) != cutlass::Status::kSuccess) {
+        uint8_t* workspace_ptr = (workspace_reuse_enabled && workspace_bytes > 0) ? reusable_workspace_allocation().storage.get() : workspace.get();
+        if (gemm_op.update(arguments, workspace_ptr) != cutlass::Status::kSuccess) {
           std::cerr << "[DIRECT_FAIL] failed to update warmup buffers" << std::endl;
           return {};
         }
@@ -1535,7 +1622,8 @@ private:
           std::cerr << "[DIRECT_FAIL] " << scheduler_error << std::endl;
           return {};
         }
-        if (gemm_op.update(arguments, workspace.get()) != cutlass::Status::kSuccess) {
+        uint8_t* workspace_ptr = (workspace_reuse_enabled && workspace_bytes > 0) ? reusable_workspace_allocation().storage.get() : workspace.get();
+        if (gemm_op.update(arguments, workspace_ptr) != cutlass::Status::kSuccess) {
           std::cerr << "[DIRECT_FAIL] failed to update measured buffers" << std::endl;
           return {};
         }
@@ -1559,15 +1647,23 @@ private:
     result.tflops = (2.0 * options.m * options.n * options.k * options.l * 1e-12) / avg_sec;
     result.avg_runtime_ms = avg_runtime_ms;
     result.total_runtime_ms = total_ms;
+    result.input_mode = input_mode_name();
+    result.workspace_bytes = static_cast<double>(workspace_bytes);
     result.input_bytes_per_buffer = static_cast<double>(input_bytes_per_buffer);
     result.input_pool_target_bytes = static_cast<double>(kRandomInputPoolBytes);
-    result.pool_buffers = count;
+    result.input_pool_buffers = count;
+    result.fixed_vram_input = use_fixed_vram_input() ? 1 : 0;
+    result.prebuilt_variants = prebuilt_variants ? 1 : 0;
+    result.workspace_reuse_enabled = workspace_reuse_enabled ? 1 : 0;
     result.warmup_iters = warmup_iters;
     result.measure_iters = measure_iters;
     result.success = true;
     auto total_end = now();
-    std::cerr << "[PERF] input_bytes_per_buffer=" << result.input_bytes_per_buffer << " pool_target_bytes=" << result.input_pool_target_bytes
-              << " pool_buffers=" << result.pool_buffers << " warmup_iters=" << result.warmup_iters << " measure_iters=" << result.measure_iters
+    std::cerr << "[PERF] input_mode=" << result.input_mode << " workspace_bytes=" << result.workspace_bytes << " input_bytes_per_buffer=" << result.input_bytes_per_buffer
+              << " pool_target_bytes=" << result.input_pool_target_bytes << " pool_buffers=" << result.input_pool_buffers
+              << " fixed_vram_input=" << result.fixed_vram_input << " prebuilt_variants=" << result.prebuilt_variants
+              << " workspace_reuse_enabled=" << result.workspace_reuse_enabled
+              << " warmup_iters=" << result.warmup_iters << " measure_iters=" << result.measure_iters
               << " total_ms=" << result.total_runtime_ms << " avg_us=" << (avg_sec*1e6) << " tf=" << result.tflops << std::endl;
     if (enable_phase_timing) {
       std::cerr << "[TIMING] init_ms=" << to_ms(init_begin, init_end)

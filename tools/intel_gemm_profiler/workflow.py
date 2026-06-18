@@ -132,7 +132,14 @@ def workflow(args):
     compile_shell_init = shell_init_with_env(args.shell_init, selected_compile_env(profiles, variant_override=args.compile_variant or None))
     if args.constraints_json or probe_mode == "off":
         constraints = copy.deepcopy(base_constraints)
-        env_caps = collect_environment_metadata(args.shell_init, args.benchmark_exe, args.streamk_example_exe, cwd=args.cwd)
+        env_caps = collect_environment_metadata(
+            args.shell_init,
+            args.benchmark_exe,
+            args.streamk_example_exe,
+            args.mixed_bf16_s8_example_exe,
+            args.mixed_f16_s8_example_exe,
+            cwd=args.cwd,
+        )
         hw_spec = resolve_hw_reference_spec(
             constraints["device_arch"],
             getattr(args, "hw_spec_id", "") or device_target_detection.get("resolved_hw_spec_id", ""),
@@ -150,7 +157,16 @@ def workflow(args):
         constraints, env_caps, verified_hw_caps_path, probe_rows, probe_logs, probe_commands = run_phase_a_probe(args, shapes_doc, base_constraints, profiles, reports_dir, configs_dir, manifests_dir, logs_dir)
         profiles = apply_probe_results_to_profiles(profiles, env_caps.get("compiler_flags_probe", {}))
         env_caps["device_target_detection"] = device_target_detection
-    allowed_runners = ("benchmark", "streamk_example") if env_caps["executables"].get("streamk_example_available") else ("benchmark",)
+    allowed_runners = ["benchmark"]
+    if env_caps["executables"].get("streamk_example_available"):
+        allowed_runners.append("streamk_example")
+    if env_caps["executables"].get("mixed_bf16_s8_example_available"):
+        allowed_runners.append("mixed_bf16_s8_example")
+    if env_caps["executables"].get("mixed_f16_s8_example_available"):
+        allowed_runners.append("mixed_f16_s8_example")
+    if args.kernel_catalog_source == "weight_only_codegen":
+        allowed_runners.append("mixed_dtype_codegen")
+    allowed_runners = tuple(allowed_runners)
     write_json(inputs_dir / "safe_search_constraints.json", constraints)
     device_target_detection_path = reports_dir / "device_target_detection.json"
     write_json(device_target_detection_path, device_target_detection)
@@ -167,6 +183,7 @@ def workflow(args):
         catalog_source=args.kernel_catalog_source,
         generator_arch=args.generator_arch,
         generator_instantiation_level=args.generator_instantiation_level,
+        constraints=constraints,
     )
     write_json(reports_dir / "kernel_catalog.json", kernel_catalog)
     candidate_space = generate_candidate_space(

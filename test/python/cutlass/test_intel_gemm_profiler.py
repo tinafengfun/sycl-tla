@@ -5,6 +5,7 @@
 
 import importlib.util
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -1037,6 +1038,45 @@ class TestIntelGemmProfiler(unittest.TestCase):
         self.assertEqual(detection["resolved_target"], "bmg")
         self.assertEqual(resolved["cmake_vars"]["DPCPP_SYCL_TARGET"], "bmg")
 
+    def test_device_target_detection_uses_sysfs_drm_fallback_for_selected_device(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            drm_root = Path(tmpdir) / "drm"
+            card0 = drm_root / "card0" / "device"
+            card0.mkdir(parents=True)
+            (card0 / "vendor").write_text("0x8086\n", encoding="utf-8")
+            (card0 / "device").write_text("0xe20b\n", encoding="utf-8")
+            (card0 / "uevent").write_text("PCI_ID=8086:E20B\nDRIVER=xe\n", encoding="utf-8")
+
+            devices, command, errors = profiler.discover_sysfs_drm_devices(target_device_id="0", drm_root=str(drm_root))
+
+        self.assertEqual(errors, [])
+        self.assertEqual(command, f"sysfs:{drm_root.as_posix()}")
+        self.assertEqual(len(devices), 1)
+        self.assertEqual(devices[0]["device_id"], "0")
+        self.assertEqual(devices[0]["pci_device_id"], "0xe20b")
+
+        build_config = profiler.default_compiler_profiles()["build_config"]
+        resolved, detection = profiler.resolve_device_target(build_config, environ={"ZE_AFFINITY_MASK": "0"}, discovery_devices=devices)
+
+        self.assertEqual(detection["status"], "detected")
+        self.assertEqual(detection["resolved_target"], "intel_gpu_bmg_g21")
+        self.assertEqual(detection["resolved_hw_spec_id"], "bmg_g21")
+        self.assertEqual(resolved["cmake_vars"]["DPCPP_SYCL_TARGET"], "intel_gpu_bmg_g21")
+
+    def test_dpcpp_host_compiler_falls_back_when_gpp13_missing(self):
+        build_config = profiler.default_compiler_profiles()["build_config"]
+        build_config["cmake_vars"]["DPCPP_HOST_COMPILER"] = "__missing_gpp_13__"
+
+        resolved, record = profiler.resolve_dpcpp_host_compiler(build_config)
+
+        self.assertEqual(record["requested_host_compiler"], "__missing_gpp_13__")
+        self.assertEqual(record["host_compiler_status"], "fallback")
+        self.assertTrue(Path(record["resolved_host_compiler"]).exists())
+        self.assertEqual(
+            resolved["cmake_vars"]["DPCPP_HOST_COMPILER"],
+            record["resolved_host_compiler"],
+        )
+
     def test_load_persisted_build_config_fallback_matches_experimental_variants(self):
         persisted = profiler.load_persisted_build_config(profiler.DEFAULT_BUILD_CONFIG_PATH)
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1135,7 +1175,9 @@ class TestIntelGemmProfiler(unittest.TestCase):
             "BmgGemmBF16BF16FP32_RCR_5/"
             "rcr_bf16bf16f32_tm8_tn128_tk32_sg1x4_st2_sk1__rcr_bf16_1_4096_14336__screening__0/"
             "1x4096x14336x1/manual_time avg_runtime_ms=0.412 best_runtime_ms=0.398 "
-            "worst_runtime_ms=0.437 avg_tflops=1.13 avg_throughput=287.4\n"
+            "worst_runtime_ms=0.437 workspace_bytes=8192 input_bytes_per_buffer=65536 "
+            "input_pool_target_bytes=1073741824 input_pool_buffers=16 fixed_vram_input=0 "
+            "prebuilt_variants=1 workspace_reuse_enabled=1 avg_tflops=1.13 avg_throughput=287.4\n"
         )
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1153,6 +1195,13 @@ class TestIntelGemmProfiler(unittest.TestCase):
         self.assertEqual(row["kernel_schedule"], "KernelXe")
         self.assertEqual(row["tile_scheduler"], "Gemm")
         self.assertEqual(row["epilogue_dispatch_policy"], "IntelXeGeneric")
+        self.assertEqual(row["workspace_bytes"], "8192")
+        self.assertEqual(row["input_bytes_per_buffer"], "65536")
+        self.assertEqual(row["input_pool_target_bytes"], "1073741824")
+        self.assertEqual(row["input_pool_buffers"], "16")
+        self.assertEqual(row["fixed_vram_input"], "0")
+        self.assertEqual(row["prebuilt_variants"], "1")
+        self.assertEqual(row["workspace_reuse_enabled"], "1")
 
     def test_parse_benchmark_log_does_not_treat_max_error_metric_as_failure(self):
         metadata = {
@@ -1570,6 +1619,67 @@ class TestIntelGemmProfiler(unittest.TestCase):
         result = json.loads(completed.stdout)
         self.assertEqual(result["status"], "found")
         self.assertEqual(result["entry"]["candidate_id"], "cli_winner")
+
+    def test_runtime_dispatch_module_cli_lookup_returns_json(self):
+        dispatch_table = {
+            "schema_version": profiler.SCHEMA_VERSION,
+            "entries": [
+                {
+                    "shape_key": {
+                        "layout": "rcr",
+                        "dtype_a": "bf16",
+                        "dtype_b": "bf16",
+                        "dtype_c": "f32",
+                        "dtype_acc": "f32",
+                        "m": 128,
+                        "n": 128,
+                        "k": 32,
+                    },
+                    "candidate_id": "module_cli_winner",
+                }
+            ],
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            table_path = Path(tmpdir) / "optimal_dispatch_table.json"
+            profiler.write_json(table_path, dispatch_table)
+            repo_root = Path(__file__).resolve().parents[3]
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "intel_gemm_profiler.cli",
+                    "--lookup-dispatch-table",
+                    str(table_path),
+                    "--lookup-layout",
+                    "rcr",
+                    "--lookup-dtype-a",
+                    "bf16",
+                    "--lookup-dtype-b",
+                    "bf16",
+                    "--lookup-dtype-c",
+                    "f32",
+                    "--lookup-dtype-acc",
+                    "f32",
+                    "--lookup-m",
+                    "128",
+                    "--lookup-n",
+                    "128",
+                    "--lookup-k",
+                    "32",
+                ],
+                check=True,
+                text=True,
+                capture_output=True,
+                env={
+                    **os.environ,
+                    "PYTHONPATH": str(repo_root / "tools"),
+                },
+            )
+
+        result = json.loads(completed.stdout)
+        self.assertEqual(result["status"], "found")
+        self.assertEqual(result["entry"]["candidate_id"], "module_cli_winner")
+        self.assertNotIn("RuntimeWarning", completed.stderr)
 
     def test_runtime_dispatch_cli_lookup_returns_fallback_json(self):
         dispatch_table = {"schema_version": profiler.SCHEMA_VERSION, "entries": []}
@@ -2557,6 +2667,24 @@ class TestIntelGemmProfiler(unittest.TestCase):
 
             profiler.validate_candidate_auto_build_mode(args, dry_run_mode=False, probe_mode=args.probe_mode)
 
+    def test_weight_only_codegen_requires_build_when_run_is_enabled(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            args = profiler.build_parser().parse_args(
+                [
+                    "--workspace",
+                    tmpdir,
+                    "--kernel-catalog-source",
+                    "weight_only_codegen",
+                    "--dtype",
+                    "bf16_s8",
+                    "--probe-mode",
+                    "off",
+                ]
+            )
+
+            with self.assertRaisesRegex(ValueError, "--build-candidate-benchmark is required"):
+                profiler.validate_candidate_auto_build_mode(args, dry_run_mode=False, probe_mode=args.probe_mode)
+
     def test_workflow_can_limit_generator_candidates_to_compiled_kernel_list(self):
         shapes = profiler.dry_run_shapes("f16")
         candidate_space = profiler.generate_candidate_space(
@@ -3211,6 +3339,316 @@ class TestIntelGemmProfiler(unittest.TestCase):
         self.assertEqual(rows[1]["reduction_mode"], "None")
         self.assertEqual(rows[2]["reduction_mode"], "SplitKReduction")
 
+    def test_run_entries_with_weight_only_example_supports_mixed_dtype_runner(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            logs_dir = Path(tmpdir) / "logs"
+            logs_dir.mkdir()
+            fake_exe = Path(tmpdir) / "fake_mixed.py"
+            fake_exe.write_text(
+                "#!/usr/bin/env python3\n"
+                "import sys\n"
+                "print('ARGS:' + ' '.join(sys.argv[1:]))\n"
+                "print('Cutlass GEMM Performance: [2.34]TFlop/s (0.67)ms')\n"
+                "print('Disposition: Passed')\n",
+                encoding="utf-8",
+            )
+            fake_exe.chmod(0o755)
+            shape = {
+                "shape_id": "shape_mixed",
+                "layout": "rrr",
+                "dtype_a": "bf16",
+                "dtype_b": "s8",
+                "dtype_c": "f32",
+                "dtype_d": "f32",
+                "dtype_acc": "f32",
+                "m": 32,
+                "n": 4096,
+                "k": 14336,
+                "batch_count": 1,
+                "runtime_defaults": {"alpha": 1.0, "beta": 0.0, "iterations": 9, "verify": 0, "g": 8, "mode": 1, "a_narrower": True},
+            }
+            candidate = {
+                "candidate_id": "cand_mixed",
+                "compiler_profile_id": "bmg.medium_tile.default",
+                "dtype_a": "bf16",
+                "dtype_b": "s8",
+                "kernel_name": "02_bmg_gemm_bf16_s8_bf16",
+                "split_k": 1,
+                "runner": "mixed_bf16_s8_example",
+                "quant_mode": "weight_only_int8",
+                "scale_mode": "groupwise",
+                "example_family": "02_bmg_gemm_mixed_dtype",
+            }
+            entries = [
+                {"bm_name": "cand_mixed__shape_mixed__screening__0", "stage": "screening", "attempt_index": 0, "shape": shape, "candidate": candidate}
+            ]
+
+            rows, commands = profiler.run_entries_with_weight_only_example(entries, logs_dir, str(fake_exe))
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["status"], "pass")
+        self.assertEqual(rows[0]["dtype_b"], "s8")
+        self.assertEqual(rows[0]["quant_mode"], "weight_only_int8")
+        self.assertEqual(rows[0]["scale_mode"], "groupwise")
+        self.assertIn("--m=32", commands[0])
+        self.assertIn("--n=4096", commands[0])
+        self.assertIn("--k=14336", commands[0])
+        self.assertIn("--iterations=9", commands[0])
+        self.assertIn("--verify=0", commands[0])
+        self.assertIn("--g=8", commands[0])
+        self.assertIn("--mode=1", commands[0])
+        self.assertIn("--a_narrower", commands[0])
+
+    def test_default_shapes_support_weight_only_dtype_presets(self):
+        shapes = profiler.default_shapes("bf16_s8")
+
+        self.assertEqual(shapes["shapes"][0]["layout"], "rrr")
+        self.assertEqual(shapes["shapes"][0]["dtype_a"], "bf16")
+        self.assertEqual(shapes["shapes"][0]["dtype_b"], "s8")
+        self.assertEqual(shapes["shapes"][0]["dtype_c"], "f32")
+        self.assertEqual(shapes["shapes"][0]["dtype_acc"], "f32")
+        self.assertEqual(shapes["shapes"][0]["quant_mode"], "weight_only_int8")
+
+    def test_generate_candidate_space_supports_weight_only_mixed_dtype_search(self):
+        shapes = profiler.default_shapes("bf16_s8")
+        candidate_space = profiler.generate_candidate_space(
+            shapes,
+            profiler.default_constraints(),
+            profiler.default_compiler_profiles(),
+            allowed_runners=("mixed_bf16_s8_example",),
+        )
+
+        self.assertEqual(len(candidate_space["candidates"]), 1)
+        candidate = candidate_space["candidates"][0]
+        self.assertEqual(candidate["runner"], "mixed_bf16_s8_example")
+        self.assertEqual(candidate["kernel_name"], "02_bmg_gemm_bf16_s8_bf16")
+        self.assertEqual(candidate["layout"], "rrr")
+        self.assertEqual(candidate["dtype_a"], "bf16")
+        self.assertEqual(candidate["dtype_b"], "s8")
+        self.assertEqual(candidate["quant_mode"], "weight_only_int8")
+        self.assertEqual(candidate["scale_mode"], "groupwise")
+
+    def test_build_kernel_catalog_supports_weight_only_codegen_source(self):
+        catalog = profiler.build_kernel_catalog(
+            dtypes=["bf16", "f16"],
+            allowed_runners=("mixed_dtype_codegen",),
+            catalog_source="weight_only_codegen",
+        )
+
+        self.assertEqual(catalog["catalog_source"], "weight_only_codegen")
+        self.assertGreater(len(catalog["kernels"]), 0)
+        self.assertTrue(all(entry["runner"] == "mixed_dtype_codegen" for entry in catalog["kernels"]))
+        self.assertTrue(any(entry["dtype_a"] == "bf16" and entry["dtype_b"] == "s8" for entry in catalog["kernels"]))
+        self.assertTrue(any(entry["dtype_a"] == "f16" and entry["dtype_b"] == "s8" for entry in catalog["kernels"]))
+
+    def test_build_kernel_catalog_weight_only_codegen_honors_bruteforce_constraints(self):
+        constraints = profiler.default_constraints()
+        constraints["weight_only_pair_policy"] = "template_bruteforce_v1"
+        catalog = profiler.build_kernel_catalog(
+            dtypes=["bf16", "f16"],
+            allowed_runners=("mixed_dtype_codegen",),
+            catalog_source="weight_only_codegen",
+            constraints=constraints,
+        )
+
+        pairs = {
+            (entry["tile_m"], entry["tile_n"], entry["tile_k"], entry["sg_m"], entry["sg_n"])
+            for entry in catalog["kernels"]
+        }
+        self.assertIn((64, 128, 32, 4, 4), pairs)
+        self.assertIn((128, 192, 32, 8, 2), pairs)
+        self.assertIn((256, 128, 32, 8, 4), pairs)
+        self.assertIn((128, 128, 64, 4, 4), pairs)
+        self.assertNotIn((32, 512, 32, 4, 4), pairs)
+
+    def test_emit_weight_only_mixed_dtype_project_generates_sources_and_cmake(self):
+        candidates = profiler.weight_only_mixed_dtype_candidates(
+            dtype_families=("bf16_s8",),
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            manifest = profiler.emit_weight_only_mixed_dtype_project(Path(tmpdir), candidates[:2])
+
+            self.assertEqual(manifest["generated_source_count"], 2)
+            self.assertTrue((Path(tmpdir) / "CMakeLists.txt").exists())
+            self.assertTrue((Path(tmpdir) / "generated_project_manifest.json").exists())
+            first_source = Path(manifest["generated_sources"][0]["path"]).read_text(encoding="utf-8")
+            cmake_text = (Path(tmpdir) / "CMakeLists.txt").read_text(encoding="utf-8")
+            self.assertIn("Autogenerated by tools/intel_gemm_profiler/mixed_dtype_codegen.py", first_source)
+            self.assertIn("using TileShape = Shape<_128, _128, _32>;", first_source)
+            self.assertIn("Layout<Shape<_4, _4, _1>, Stride<_4, _1, _0>>", first_source)
+            self.assertIn("cutlass_add_executable(${NAME} ${SOURCE_FILE} BATCH_SOURCES OFF)", cmake_text)
+            self.assertIn('set(SYCL_INTEL_TARGET ON CACHE BOOL "" FORCE)', cmake_text)
+            self.assertIn("if(TARGET MKL::MKL)", cmake_text)
+            self.assertIn('include("', cmake_text)
+            self.assertIn('/cmake/FindDPCPP.cmake")', cmake_text)
+            self.assertIn('set(CUTLASS_USING_SYSTEM_ONEMKL TRUE CACHE BOOL "" FORCE)', cmake_text)
+            self.assertIn("target_link_libraries(${NAME} PRIVATE CUTLASS cutlass_tools_util_includes)", cmake_text)
+            self.assertIn("target_compile_definitions(${NAME} PRIVATE CUTLASS_ENABLE_SYCL SYCL_INTEL_TARGET)", cmake_text)
+            self.assertIn('"${CMAKE_BINARY_DIR}/cutlass/include"', cmake_text)
+            self.assertIn("add_sycl_to_target(TARGET ${NAME})", cmake_text)
+
+    def test_weight_only_mixed_dtype_candidates_use_curated_initial_pairs(self):
+        candidates = profiler.weight_only_mixed_dtype_candidates(dtype_families=("bf16_s8",))
+        pairs = {
+            (entry["tile_m"], entry["tile_n"], entry["tile_k"], entry["sg_m"], entry["sg_n"])
+            for entry in candidates
+        }
+
+        self.assertIn((128, 128, 32, 4, 4), pairs)
+        self.assertIn((128, 128, 64, 4, 4), pairs)
+        self.assertIn((128, 256, 32, 4, 4), pairs)
+        self.assertIn((256, 64, 32, 8, 2), pairs)
+        self.assertIn((256, 128, 32, 4, 4), pairs)
+        self.assertIn((256, 128, 32, 8, 2), pairs)
+        self.assertIn((256, 128, 32, 8, 4), pairs)
+        self.assertIn((256, 256, 32, 8, 4), pairs)
+        self.assertNotIn((64, 128, 32, 4, 4), pairs)
+        self.assertNotIn((128, 192, 32, 4, 4), pairs)
+        self.assertNotIn((128, 128, 32, 8, 2), pairs)
+        self.assertNotIn((128, 128, 32, 8, 4), pairs)
+
+        f16_candidates = profiler.weight_only_mixed_dtype_candidates(dtype_families=("f16_s8",))
+        f16_pairs = {
+            (entry["tile_m"], entry["tile_n"], entry["tile_k"], entry["sg_m"], entry["sg_n"])
+            for entry in f16_candidates
+        }
+        self.assertIn((128, 128, 32, 4, 4), f16_pairs)
+        self.assertIn((128, 128, 64, 4, 4), f16_pairs)
+        self.assertIn((128, 256, 32, 4, 4), f16_pairs)
+        self.assertIn((256, 64, 32, 8, 2), f16_pairs)
+        self.assertIn((256, 128, 32, 4, 4), f16_pairs)
+        self.assertIn((256, 128, 32, 8, 2), f16_pairs)
+        self.assertIn((256, 128, 32, 8, 4), f16_pairs)
+        self.assertIn((256, 256, 32, 8, 4), f16_pairs)
+        self.assertNotIn((64, 128, 32, 4, 4), f16_pairs)
+        self.assertNotIn((128, 192, 32, 4, 4), f16_pairs)
+
+    def test_weight_only_mixed_dtype_candidates_support_template_bruteforce_policy(self):
+        constraints = profiler.default_constraints()
+        constraints["weight_only_pair_policy"] = "template_bruteforce_v1"
+        candidates = profiler.weight_only_mixed_dtype_candidates(
+            dtype_families=("bf16_s8",),
+            constraints=constraints,
+        )
+        pairs = {
+            (entry["tile_m"], entry["tile_n"], entry["tile_k"], entry["sg_m"], entry["sg_n"])
+            for entry in candidates
+        }
+
+        self.assertIn((64, 128, 32, 4, 4), pairs)
+        self.assertIn((128, 192, 32, 8, 2), pairs)
+        self.assertIn((256, 128, 32, 8, 4), pairs)
+        self.assertIn((128, 128, 64, 4, 4), pairs)
+        self.assertNotIn((32, 512, 32, 4, 4), pairs)
+
+    def test_weight_only_mixed_dtype_candidates_support_template_bruteforce_v2_policy(self):
+        constraints = profiler.default_constraints()
+        constraints["weight_only_pair_policy"] = "template_bruteforce_v2"
+        candidates = profiler.weight_only_mixed_dtype_candidates(
+            dtype_families=("bf16_s8",),
+            constraints=constraints,
+        )
+        pairs = {
+            (entry["tile_m"], entry["tile_n"], entry["tile_k"], entry["sg_m"], entry["sg_n"])
+            for entry in candidates
+        }
+
+        self.assertIn((32, 64, 32, 4, 4), pairs)
+        self.assertIn((32, 512, 32, 4, 4), pairs)
+        self.assertIn((128, 32, 64, 8, 2), pairs)
+        self.assertIn((256, 32, 64, 8, 2), pairs)
+
+    def test_run_entries_with_weight_only_codegen_uses_generated_executable_map(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            logs_dir = Path(tmpdir) / "logs"
+            logs_dir.mkdir()
+            fake_exe = Path(tmpdir) / "weight_only_codegen_fake.py"
+            fake_exe.write_text(
+                "#!/usr/bin/env python3\n"
+                "import sys\n"
+                "print('ARGS:' + ' '.join(sys.argv[1:]))\n"
+                "print('Cutlass GEMM Performance: [3.21]TFlop/s (0.89)ms')\n"
+                "print('Disposition: Passed')\n",
+                encoding="utf-8",
+            )
+            fake_exe.chmod(0o755)
+            shape = profiler.default_shapes("bf16_s8")["shapes"][0]
+            candidate = {
+                "candidate_id": "cand_codegen",
+                "compiler_profile_id": "bmg.medium_tile.default",
+                "kernel_id": "WtOnlyBF16S8F32_RRR_128x128x32_SG4x4_ST2",
+                "kernel_name": "WtOnlyBF16S8F32_RRR_128x128x32_SG4x4_ST2",
+                "benchmark_target": "weight_only_bf16_s8_128x128x32_sg4x4_st2",
+                "runner": "mixed_dtype_codegen",
+                "split_k": 1,
+                "quant_mode": "weight_only_int8",
+                "scale_mode": "groupwise",
+            }
+            entries = [
+                {"bm_name": "cand_codegen__shape__screening__0", "stage": "screening", "attempt_index": 0, "shape": shape, "candidate": candidate}
+            ]
+            build_plan = {"generated_executables": {candidate["kernel_id"]: str(fake_exe)}}
+
+            rows, commands = profiler.run_entries_with_weight_only_codegen(entries, logs_dir, build_plan)
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["status"], "pass")
+        self.assertIn("--m=1", commands[0])
+        self.assertIn("--n=4096", commands[0])
+        self.assertIn("--k=14336", commands[0])
+
+    def test_run_entries_with_batch_weight_only_codegen_routes_by_batch_plan(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            logs_dir = Path(tmpdir) / "logs"
+            logs_dir.mkdir()
+            exe_a = Path(tmpdir) / "batch_a.py"
+            exe_b = Path(tmpdir) / "batch_b.py"
+            script = (
+                "#!/usr/bin/env python3\n"
+                "import sys\n"
+                "print('ARGS:' + ' '.join(sys.argv[1:]))\n"
+                "print('Cutlass GEMM Performance: [3.21]TFlop/s (0.89)ms')\n"
+                "print('Disposition: Passed')\n"
+            )
+            exe_a.write_text(script, encoding="utf-8")
+            exe_b.write_text(script, encoding="utf-8")
+            exe_a.chmod(0o755)
+            exe_b.chmod(0o755)
+            shape = profiler.default_shapes("bf16_s8")["shapes"][0]
+            candidate_a = {
+                "candidate_id": "cand_codegen_a",
+                "compiler_profile_id": "bmg.medium_tile.default",
+                "kernel_id": "WtOnlyBF16S8F32_RRR_128x128x32_SG4x4_ST2",
+                "kernel_name": "WtOnlyBF16S8F32_RRR_128x128x32_SG4x4_ST2",
+                "benchmark_target": "weight_only_bf16_s8_128x128x32_sg4x4_st2",
+                "runner": "mixed_dtype_codegen",
+                "split_k": 1,
+                "quant_mode": "weight_only_int8",
+                "scale_mode": "groupwise",
+            }
+            candidate_b = {
+                **candidate_a,
+                "candidate_id": "cand_codegen_b",
+                "kernel_id": "WtOnlyBF16S8F32_RRR_128x256x32_SG4x4_ST2",
+                "kernel_name": "WtOnlyBF16S8F32_RRR_128x256x32_SG4x4_ST2",
+                "benchmark_target": "weight_only_bf16_s8_128x256x32_sg4x4_st2",
+            }
+            entries = [
+                {"bm_name": "cand_codegen_a__shape__screening__0", "stage": "screening", "attempt_index": 0, "shape": shape, "candidate": candidate_a},
+                {"bm_name": "cand_codegen_b__shape__screening__0", "stage": "screening", "attempt_index": 0, "shape": shape, "candidate": candidate_b},
+            ]
+            batch_plan_by_kernel = {
+                candidate_a["kernel_id"]: {"batch_id": "a", "generated_executables": {candidate_a["kernel_id"]: str(exe_a)}},
+                candidate_b["kernel_id"]: {"batch_id": "b", "generated_executables": {candidate_b["kernel_id"]: str(exe_b)}},
+            }
+
+            rows, commands = profiler.run_entries_with_batch_weight_only_codegen(entries, logs_dir, batch_plan_by_kernel)
+
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(len(commands), 2)
+        self.assertTrue(all(row["status"] == "pass" for row in rows))
+
     def test_bruteforce_scheduler_search_defaults_force_layered_batch_preflight(self):
         parser = profiler.build_parser()
         args = parser.parse_args(
@@ -3370,6 +3808,58 @@ class TestIntelGemmProfiler(unittest.TestCase):
         self.assertEqual(updated.candidate_build_batch_size, 8)
         self.assertTrue(updated.run_candidate_build_preflight)
 
+    def test_search_strategy_weight_only_codegen_enables_build(self):
+        parser = profiler.build_parser()
+        args = parser.parse_args(
+            [
+                "--workspace",
+                "/tmp/workspace",
+                "--search-strategy",
+                "weight_only_codegen",
+            ]
+        )
+
+        updated = profiler.apply_search_strategy_defaults(args)
+
+        self.assertEqual(updated.kernel_catalog_source, "weight_only_codegen")
+        self.assertEqual(updated.prefilter, "none")
+        self.assertTrue(updated.build_candidate_benchmark)
+
+    def test_search_strategy_weight_only_codegen_skip_run_disables_build(self):
+        parser = profiler.build_parser()
+        args = parser.parse_args(
+            [
+                "--workspace",
+                "/tmp/workspace",
+                "--search-strategy",
+                "weight_only_codegen",
+                "--skip-run",
+            ]
+        )
+
+        updated = profiler.apply_search_strategy_defaults(args)
+
+        self.assertEqual(updated.kernel_catalog_source, "weight_only_codegen")
+        self.assertFalse(updated.build_candidate_benchmark)
+
+    def test_search_strategy_weight_only_codegen_preserves_explicit_preflight_flags(self):
+        parser = profiler.build_parser()
+        args = parser.parse_args(
+            [
+                "--workspace",
+                "/tmp/workspace",
+                "--search-strategy",
+                "weight_only_codegen",
+                "--run-candidate-build-preflight",
+                "--use-candidate-build-preflight-benchmarks",
+            ]
+        )
+
+        updated = profiler.apply_search_strategy_defaults(args)
+
+        self.assertTrue(updated.run_candidate_build_preflight)
+        self.assertTrue(updated.use_candidate_build_preflight_benchmarks)
+
     def test_workflow_bruteforce_scheduler_search_runs_with_fake_preflight_benchmarks(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp = Path(tmpdir)
@@ -3384,7 +3874,7 @@ class TestIntelGemmProfiler(unittest.TestCase):
                 "        continue\n"
                 "    parts = line.split()\n"
                 "    bm = next(token.split('=', 1)[1] for token in parts if token.startswith('--bm_name='))\n"
-                "    print(f\"{parts[0]}/{bm} manual_time runtime_trimmed_mean_ms=0.50 runtime_min_ms=0.45 runtime_max_ms=0.60 runtime_median_ms=0.50 runtime_stddev_ms=0.03 warmup_iters=2 measure_iters=7 avg_tflops=123.4 median_tflops=122.8 avg_throughput=0.0\")\n",
+                "    print(f\"{parts[0]}/{bm} manual_time runtime_trimmed_mean_ms=0.50 runtime_min_ms=0.45 runtime_max_ms=0.60 runtime_median_ms=0.50 runtime_stddev_ms=0.03 warmup_iters=2 measure_iters=7 workspace_bytes=4096 input_bytes_per_buffer=1024 input_pool_target_bytes=1073741824 input_pool_buffers=8 fixed_vram_input=0 prebuilt_variants=1 workspace_reuse_enabled=1 avg_tflops=123.4 median_tflops=122.8 avg_throughput=0.0\")\n",
                 encoding="utf-8",
             )
             bench.chmod(0o755)
@@ -3526,6 +4016,257 @@ class TestIntelGemmProfiler(unittest.TestCase):
         self.assertIn("reduction_mode", phase_b_summary["selected_dimension_values"])
         self.assertIn("scheduler_family", results_csv.splitlines()[0])
         self.assertIn("reduction_mode", results_csv.splitlines()[0])
+
+    def test_workflow_weight_only_codegen_runs_with_fake_generated_executables(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            constraints_path = tmp / "weight_only_constraints.json"
+            constraints = profiler.default_constraints()
+            constraints["allowed_values"]["tile_m"] = [128]
+            constraints["allowed_values"]["tile_n"] = [128]
+            constraints["allowed_values"]["tile_k"] = [32]
+            constraints["allowed_values"]["sg_m"] = [4]
+            constraints["allowed_values"]["sg_n"] = [4]
+            constraints["allowed_values"]["stages"] = [2]
+            constraints_path.write_text(json.dumps(constraints), encoding="utf-8")
+            args = profiler.build_parser().parse_args(
+                [
+                    "--workspace",
+                    str(tmp / "workspace"),
+                    "--dtype",
+                    "bf16_s8",
+                    "--max-shapes",
+                    "1",
+                    "--constraints-json",
+                    str(constraints_path),
+                    "--search-strategy",
+                    "weight_only_codegen",
+                    "--top-k",
+                    "1",
+                    "--confirm-runs",
+                    "1",
+                    "--shell-init",
+                    "true",
+                    "--cwd",
+                    str(tmp),
+                ]
+            )
+
+            def fake_execute_candidate_build_plan(build_plan, log_dir, shell_init="", timeout=None, log_prefix="candidate_build"):
+                log_dir = Path(log_dir)
+                log_dir.mkdir(parents=True, exist_ok=True)
+                configure_log = log_dir / f"{log_prefix}_configure.log"
+                build_log = log_dir / f"{log_prefix}.log"
+                configure_log.write_text("configure ok\n", encoding="utf-8")
+                build_log.write_text("build ok\n", encoding="utf-8")
+                for exe_path in build_plan.get("generated_executables", {}).values():
+                    exe = Path(exe_path)
+                    exe.parent.mkdir(parents=True, exist_ok=True)
+                    exe.write_text(
+                        "#!/usr/bin/env python3\n"
+                        "print('Cutlass GEMM Performance: [9.99]TFlop/s (0.55)ms')\n"
+                        "print('Disposition: Passed')\n",
+                        encoding="utf-8",
+                    )
+                    exe.chmod(0o755)
+                return {
+                    "schema_version": build_plan["schema_version"],
+                    "generated_at": build_plan["generated_at"],
+                    "status": "pass",
+                    "build_target": build_plan["build_target"],
+                    "benchmark_exe": build_plan.get("benchmark_exe", ""),
+                    "selected_kernel_count": build_plan.get("selected_kernel_count", ""),
+                    "kernel_filter_file": build_plan.get("kernel_filter_file", ""),
+                    "steps": [
+                        {"step": "configure", "status": "pass", "returncode": 0, "command": "fake configure", "log": str(configure_log)},
+                        {"step": "build", "status": "pass", "returncode": 0, "command": "fake build", "log": str(build_log)},
+                    ],
+                }
+
+            workflow_globals = profiler.workflow.__globals__
+            original_build = workflow_globals["execute_candidate_build_plan"]
+            workflow_globals["execute_candidate_build_plan"] = fake_execute_candidate_build_plan
+            try:
+                outputs = profiler.workflow(args)
+            finally:
+                workflow_globals["execute_candidate_build_plan"] = original_build
+
+            candidate_space = profiler.read_json(Path(outputs["candidate_space"]))
+            build_plan = profiler.read_json(Path(outputs["candidate_build_plan"]))
+            run_summary = profiler.read_json(Path(outputs["run_summary"]))
+            phase_a_summary = profiler.read_json(Path(outputs["phase_a_summary"]))
+            results_csv = Path(outputs["results_csv"]).read_text(encoding="utf-8")
+
+        self.assertEqual(candidate_space["kernel_catalog"]["catalog_source"], "weight_only_codegen")
+        self.assertEqual(len(candidate_space["candidates"]), 1)
+        self.assertEqual(candidate_space["candidates"][0]["runner"], "mixed_dtype_codegen")
+        self.assertEqual(build_plan["build_target"], "weight_only_mixed_dtype_codegen_all")
+        self.assertIn("generated_executables", build_plan)
+        self.assertTrue(
+            next(iter(build_plan["generated_executables"].values())).endswith(
+                "/build/candidate_benchmarks/bin/weight_only_bf16_s8_128x128x32_sg4x4_st2"
+            )
+        )
+        self.assertTrue(build_plan["generated_project_manifest"].endswith("generated_project_manifest.json"))
+        self.assertEqual(phase_a_summary["probe_mode"], "external_constraints")
+        self.assertGreater(run_summary["passed"], 0)
+        self.assertIn("weight_only_int8", results_csv)
+
+    def test_workflow_weight_only_codegen_can_run_from_preflight_batches_only(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            constraints_path = tmp / "weight_only_constraints.json"
+            constraints = profiler.default_constraints()
+            constraints["allowed_values"]["tile_m"] = [128]
+            constraints["allowed_values"]["tile_n"] = [128, 256]
+            constraints["allowed_values"]["tile_k"] = [32]
+            constraints["allowed_values"]["sg_m"] = [4]
+            constraints["allowed_values"]["sg_n"] = [4]
+            constraints["allowed_values"]["stages"] = [2]
+            constraints_path.write_text(json.dumps(constraints), encoding="utf-8")
+            args = profiler.build_parser().parse_args(
+                [
+                    "--workspace",
+                    str(tmp / "workspace"),
+                    "--dtype",
+                    "bf16_s8",
+                    "--max-shapes",
+                    "1",
+                    "--constraints-json",
+                    str(constraints_path),
+                    "--search-strategy",
+                    "weight_only_codegen",
+                    "--candidate-build-batch-size",
+                    "1",
+                    "--run-candidate-build-preflight",
+                    "--use-candidate-build-preflight-benchmarks",
+                    "--top-k",
+                    "1",
+                    "--confirm-runs",
+                    "1",
+                    "--shell-init",
+                    "true",
+                    "--cwd",
+                    str(tmp),
+                ]
+            )
+
+            def fake_execute_candidate_build_preflight_plans(build_plan, log_dir, shell_init="", timeout=None, max_workers=1, resume=False, progress_path=None):
+                log_dir = Path(log_dir)
+                log_dir.mkdir(parents=True, exist_ok=True)
+                batches = []
+                for index, plan in enumerate(build_plan.get("batch_preflight_plans", [])):
+                    log_path = log_dir / f"candidate_build_preflight_{plan['batch_id']}.log"
+                    log_path.write_text("preflight\n", encoding="utf-8")
+                    status = "pass" if index == 0 else "fail"
+                    if status == "pass":
+                        for exe_path in plan.get("generated_executables", {}).values():
+                            exe = Path(exe_path)
+                            exe.parent.mkdir(parents=True, exist_ok=True)
+                            exe.write_text(
+                                "#!/usr/bin/env python3\n"
+                                "print('Cutlass GEMM Performance: [9.99]TFlop/s (0.55)ms')\n"
+                                "print('Disposition: Passed')\n",
+                                encoding="utf-8",
+                            )
+                            exe.chmod(0o755)
+                    batches.append(
+                        {
+                            "batch_id": plan["batch_id"],
+                            "batch_index": plan["batch_index"],
+                            "kernel_count": plan["kernel_count"],
+                            "status": status,
+                            "failure_reason": "" if status == "pass" else "compile fail",
+                            "steps": [{"step": "build", "status": status, "log": str(log_path)}],
+                        }
+                    )
+                return {
+                    "schema_version": build_plan["schema_version"],
+                    "generated_at": build_plan["generated_at"],
+                    "status": "fail",
+                    "batch_count": len(batches),
+                    "passed_batches": 1,
+                    "failed_batches": max(0, len(batches) - 1),
+                    "failure_reason": "compile fail",
+                    "batches": batches,
+                }
+
+            def fail_execute_candidate_build_plan(*_args, **_kwargs):
+                raise AssertionError("aggregate build should be skipped when running from preflight mixed-dtype batches")
+
+            workflow_globals = profiler.workflow.__globals__
+            original_build = workflow_globals["execute_candidate_build_plan"]
+            original_preflight = workflow_globals["execute_candidate_build_preflight_plans"]
+            workflow_globals["execute_candidate_build_plan"] = fail_execute_candidate_build_plan
+            workflow_globals["execute_candidate_build_preflight_plans"] = fake_execute_candidate_build_preflight_plans
+            try:
+                outputs = profiler.workflow(args)
+            finally:
+                workflow_globals["execute_candidate_build_plan"] = original_build
+                workflow_globals["execute_candidate_build_preflight_plans"] = original_preflight
+
+            candidate_space = profiler.read_json(Path(outputs["candidate_space"]))
+            preflight_summary = profiler.read_json(Path(outputs["candidate_build_preflight_summary"]))
+            build_summary = profiler.read_json(Path(outputs["candidate_build_summary"]))
+            run_summary = profiler.read_json(Path(outputs["run_summary"]))
+            build_plan = profiler.read_json(Path(outputs["candidate_build_plan"]))
+
+        self.assertEqual(len(candidate_space["candidates"]), 2)
+        self.assertEqual(preflight_summary["passed_batches"], 1)
+        self.assertEqual(build_summary["status"], "not_run")
+        self.assertEqual(len(build_plan["batch_preflight_plans"]), 2)
+        self.assertIn("/generated/mixed_dtype_codegen/selected_kernel_batch_000", build_plan["batch_preflight_plans"][0]["source_dir"])
+        self.assertGreater(run_summary["passed"], 0)
+
+    def test_skip_run_weight_only_codegen_emits_artifacts_without_build(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            constraints_path = tmp / "weight_only_constraints.json"
+            constraints = profiler.default_constraints()
+            constraints["allowed_values"]["tile_m"] = [128]
+            constraints["allowed_values"]["tile_n"] = [128]
+            constraints["allowed_values"]["tile_k"] = [32]
+            constraints["allowed_values"]["sg_m"] = [4]
+            constraints["allowed_values"]["sg_n"] = [4]
+            constraints["allowed_values"]["stages"] = [2]
+            constraints_path.write_text(json.dumps(constraints), encoding="utf-8")
+            args = profiler.build_parser().parse_args(
+                [
+                    "--workspace",
+                    str(tmp / "workspace"),
+                    "--dtype",
+                    "bf16_s8",
+                    "--max-shapes",
+                    "1",
+                    "--constraints-json",
+                    str(constraints_path),
+                    "--search-strategy",
+                    "weight_only_codegen",
+                    "--skip-run",
+                    "--cwd",
+                    str(tmp),
+                ]
+            )
+
+            def fail_execute_candidate_build_plan(*_args, **_kwargs):
+                raise AssertionError("skip-run should not execute candidate builds")
+
+            workflow_globals = profiler.workflow.__globals__
+            original_build = workflow_globals["execute_candidate_build_plan"]
+            workflow_globals["execute_candidate_build_plan"] = fail_execute_candidate_build_plan
+            try:
+                outputs = profiler.workflow(args)
+            finally:
+                workflow_globals["execute_candidate_build_plan"] = original_build
+
+            build_plan = profiler.read_json(Path(outputs["candidate_build_plan"]))
+            build_summary = profiler.read_json(Path(outputs["candidate_build_summary"]))
+            run_summary = profiler.read_json(Path(outputs["run_summary"]))
+
+        self.assertEqual(build_plan["build_target"], "weight_only_mixed_dtype_codegen_all")
+        self.assertEqual(build_summary["status"], "not_run")
+        self.assertEqual(build_summary["reason"], "build_candidate_benchmark disabled")
+        self.assertEqual(run_summary["rows"], 0)
 
     def test_static_probe_disables_splitk_without_streamk_binary(self):
         constraints = profiler.default_constraints()
@@ -4140,6 +4881,171 @@ class TestIntelGemmProfiler(unittest.TestCase):
         self.assertEqual(ranked["ranked_entries"][1]["kernel_name"], "gemm_low_2x4")
         self.assertEqual(ranked["ranked_entries"][1]["priority_tier"], "low")
         self.assertIn("low_priority_gemm_subgroup", ranked["ranked_entries"][1]["priority_tier_reason"])
+
+    def test_exact_shape_priority_uses_tiny_n_bucket(self):
+        hw_spec = profiler.resolve_hw_reference_spec("bmg", "bmg_g31")
+        shape = {"m": 8192, "n": 384, "k": 3584}
+        cfg10 = {
+            "kernel_name": "gemm_cfg10",
+            "layout": "rcr",
+            "tile_m": 128,
+            "tile_n": 128,
+            "tile_k": 64,
+            "sg_m": 4,
+            "sg_n": 4,
+            "stages": 1,
+            "streamk_mode": "",
+            "dtype_a": "bf16",
+        }
+
+        scored = profiler.score_exact_shape_kernel(cfg10, shape, hw_spec=hw_spec)
+
+        self.assertEqual(scored["bucket"], "tiny_n")
+        self.assertEqual(scored["refer_seed"], "refer_tiny_n_cfg10")
+        self.assertEqual(scored["tier"], "high")
+        self.assertIn("refer_seed:", scored["tier_reason"])
+
+    def test_exact_shape_priority_filters_known_timeout_streamk_family(self):
+        hw_spec = profiler.resolve_hw_reference_spec("bmg", "bmg_g31")
+        shape = {"m": 8192, "n": 19008, "k": 8192}
+        filtered = {
+            "kernel_name": "streamk_timeout_family",
+            "layout": "rcr",
+            "tile_m": 512,
+            "tile_n": 128,
+            "tile_k": 64,
+            "sg_m": 4,
+            "sg_n": 8,
+            "stages": 2,
+            "streamk_mode": "streamk",
+            "dtype_a": "bf16",
+        }
+        kept = {
+            "kernel_name": "dp_safe_family",
+            "layout": "rcr",
+            "tile_m": 512,
+            "tile_n": 64,
+            "tile_k": 32,
+            "sg_m": 8,
+            "sg_n": 2,
+            "stages": 3,
+            "streamk_mode": "data_parallel",
+            "dtype_a": "bf16",
+        }
+
+        ranked = profiler.prioritize_exact_shape_kernels([filtered, kept], [shape], hw_spec=hw_spec)
+
+        self.assertEqual(ranked["kept_entry_count"], 1)
+        self.assertEqual(ranked["filtered_entry_count"], 1)
+        self.assertEqual(ranked["filtered_entries"][0]["kernel_name"], "streamk_timeout_family")
+        self.assertEqual(
+            ranked["filtered_entries"][0]["priority_filter_reason"],
+            "timeout_family_blacklist:timeout_streamk_512x128x64_sg4x8_rcr",
+        )
+
+    def test_exact_shape_priority_demotes_timeout_prone_family(self):
+        hw_spec = profiler.resolve_hw_reference_spec("bmg", "bmg_g31")
+        shape = {"m": 8192, "n": 19008, "k": 8192}
+        high = {
+            "kernel_name": "dp_high_8x4",
+            "layout": "rcr",
+            "tile_m": 512,
+            "tile_n": 128,
+            "tile_k": 32,
+            "sg_m": 8,
+            "sg_n": 4,
+            "stages": 2,
+            "streamk_mode": "data_parallel",
+            "dtype_a": "bf16",
+        }
+        low = {
+            "kernel_name": "splitk_timeout_prone",
+            "layout": "rrr",
+            "tile_m": 64,
+            "tile_n": 512,
+            "tile_k": 64,
+            "sg_m": 8,
+            "sg_n": 2,
+            "stages": 2,
+            "streamk_mode": "splitk",
+            "dtype_a": "bf16",
+        }
+
+        ranked = profiler.prioritize_exact_shape_kernels([low, high], [shape], hw_spec=hw_spec)
+
+        self.assertEqual(ranked["ranked_entries"][0]["kernel_name"], "dp_high_8x4")
+        self.assertEqual(ranked["ranked_entries"][1]["priority_tier"], "low")
+        self.assertIn("timeout_family_probation", ranked["ranked_entries"][1]["priority_tier_reason"])
+
+    def test_exact_shape_priority_prefers_refer_seed_for_tiny_n_mid_m(self):
+        hw_spec = profiler.resolve_hw_reference_spec("bmg", "bmg_g31")
+        shape = {"m": 8192, "n": 384, "k": 3584}
+        refer_seed = {
+            "kernel_name": "gemm_refer_cfg10",
+            "layout": "rcr",
+            "tile_m": 128,
+            "tile_n": 128,
+            "tile_k": 64,
+            "sg_m": 4,
+            "sg_n": 4,
+            "stages": 1,
+            "streamk_mode": "",
+            "dtype_a": "bf16",
+        }
+        non_seed = {
+            "kernel_name": "gemm_other",
+            "layout": "rcr",
+            "tile_m": 128,
+            "tile_n": 256,
+            "tile_k": 32,
+            "sg_m": 8,
+            "sg_n": 2,
+            "stages": 2,
+            "streamk_mode": "",
+            "dtype_a": "bf16",
+        }
+
+        refer_score = profiler.score_exact_shape_kernel(refer_seed, shape, hw_spec=hw_spec)["score"]
+        other_score = profiler.score_exact_shape_kernel(non_seed, shape, hw_spec=hw_spec)["score"]
+        ranked = profiler.prioritize_exact_shape_kernels([non_seed, refer_seed], [shape], hw_spec=hw_spec)
+
+        self.assertGreater(refer_score, other_score)
+        self.assertEqual(ranked["ranked_entries"][0]["kernel_name"], "gemm_refer_cfg10")
+        self.assertEqual(ranked["ranked_entries"][0]["priority_bucket"], "tiny_n")
+        self.assertEqual(ranked["ranked_entries"][0]["priority_refer_seed"], "refer_tiny_n_cfg10")
+
+    def test_exact_shape_priority_prefers_refer_seed_for_tiny_n_large_m(self):
+        hw_spec = profiler.resolve_hw_reference_spec("bmg", "bmg_g31")
+        shape = {"m": 16384, "n": 384, "k": 3584}
+        cfg16 = {
+            "kernel_name": "gemm_refer_cfg16",
+            "layout": "rcr",
+            "tile_m": 96,
+            "tile_n": 128,
+            "tile_k": 64,
+            "sg_m": 4,
+            "sg_n": 4,
+            "stages": 2,
+            "streamk_mode": "",
+            "dtype_a": "bf16",
+        }
+        cfg11 = {
+            "kernel_name": "gemm_cfg11",
+            "layout": "rcr",
+            "tile_m": 128,
+            "tile_n": 128,
+            "tile_k": 64,
+            "sg_m": 8,
+            "sg_n": 4,
+            "stages": 2,
+            "streamk_mode": "",
+            "dtype_a": "bf16",
+        }
+
+        ranked = profiler.prioritize_exact_shape_kernels([cfg11, cfg16], [shape], hw_spec=hw_spec)
+
+        self.assertEqual(ranked["ranked_entries"][0]["kernel_name"], "gemm_refer_cfg16")
+        self.assertEqual(ranked["ranked_entries"][0]["priority_refer_seed"], "refer_tiny_n_cfg16")
 
     def test_learn_exact_shape_priority_state_tracks_winner_features(self):
         state = profiler.default_exact_shape_priority_state()

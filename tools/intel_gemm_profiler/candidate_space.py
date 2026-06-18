@@ -86,6 +86,7 @@ def generate_candidate_space(
         catalog_source=catalog_source,
         generator_arch=generator_arch,
         generator_instantiation_level=generator_instantiation_level,
+        constraints=constraints,
     )
     available_streamk_signatures = {
         (entry["layout"], entry["dtype_a"], entry["dtype_b"], entry["dtype_c"], entry.get("dtype_d", entry["dtype_c"]), entry["dtype_acc"])

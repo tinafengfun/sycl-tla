@@ -26,6 +26,15 @@ def strip_internal_fields(row: dict) -> dict:
     return {key: value for key, value in row.items() if not key.startswith("_")}
 
 
+def canonical_input_mode(value: str | None, *, fixed_vram_input: bool = False) -> str:
+    mode = (value or "").strip()
+    if mode in ("", "rotating_vram_pool"):
+        return "fixed_buffer" if fixed_vram_input else "rotating_vram_pool"
+    if mode in ("fixed_buffer", "fixed_vram_input"):
+        return "fixed_buffer"
+    return mode
+
+
 def format_numeric_cli_arg(value: int | float) -> str:
     if isinstance(value, int):
         return str(value)
@@ -144,6 +153,7 @@ def build_repro_manifest(
                 "benchmark_warmup_iters",
                 "benchmark_measure_iters",
                 "benchmark_fixed_vram_input",
+                "benchmark_workspace_reuse",
                 "perf_env_ONEAPI_DEVICE_SELECTOR",
                 "perf_env_SYCL_PROGRAM_COMPILE_OPTIONS",
                 "perf_env_IGC_VectorAliasBBThreshold",
@@ -172,11 +182,20 @@ def write_repro_script(
     sycl_compile_options = run_meta.get("perf_env_SYCL_PROGRAM_COMPILE_OPTIONS", "")
     igc_vector_alias = run_meta.get("perf_env_IGC_VectorAliasBBThreshold", "")
     igc_extra_options = run_meta.get("perf_env_IGC_ExtraOCLOptions", "")
+    input_mode = "rotating_vram_pool"
     fixed_vram_input = False
+    workspace_reuse_enabled = True
     phase_timing_enabled = False
     if isinstance(benchmark_config, dict):
         fixed_vram_input = bool(benchmark_config.get("fixed_vram_input", False))
+        input_mode = canonical_input_mode(benchmark_config.get("input_mode"), fixed_vram_input=fixed_vram_input)
+        fixed_vram_input = input_mode == "fixed_buffer"
+        workspace_reuse_enabled = bool(benchmark_config.get("workspace_reuse_enabled", True))
         phase_timing_enabled = bool(benchmark_config.get("phase_timing_enabled", False))
+    else:
+        input_mode = canonical_input_mode(run_meta.get("benchmark_input_mode"), fixed_vram_input=run_meta.get("benchmark_fixed_vram_input") == "1")
+        fixed_vram_input = input_mode == "fixed_buffer"
+        workspace_reuse_enabled = run_meta.get("benchmark_workspace_reuse", "1") != "0"
     default_gpu = ""
     if rows:
         gpu_value = rows[0].get("gpu", "")
@@ -204,11 +223,16 @@ export ONEAPI_DEVICE_SELECTOR={shlex.quote(oneapi_device_selector)}
 export SYCL_PROGRAM_COMPILE_OPTIONS={shlex.quote(sycl_compile_options)}
 export IGC_VectorAliasBBThreshold={shlex.quote(igc_vector_alias)}
 export IGC_ExtraOCLOptions={shlex.quote(igc_extra_options)}
+export CUTLASS_BENCHMARK_INPUT_MODE={shlex.quote(input_mode)}
 """
     if fixed_vram_input:
         script += 'export CUTLASS_BENCHMARK_FIXED_VRAM_INPUT=1\n'
     else:
         script += 'unset CUTLASS_BENCHMARK_FIXED_VRAM_INPUT 2>/dev/null || true\n'
+    if workspace_reuse_enabled:
+        script += 'export CUTLASS_BENCHMARK_REUSE_WORKSPACE=1\n'
+    else:
+        script += 'export CUTLASS_BENCHMARK_REUSE_WORKSPACE=0\n'
     if phase_timing_enabled:
         script += 'export CUTLASS_BENCHMARK_PHASE_TIMING=1\n'
     else:

@@ -41,13 +41,14 @@ GIT_REF="${GIT_REF:-origin/main}"
 SKIP_SYNC="${SKIP_SYNC:-0}"
 STOP_EXISTING="${STOP_EXISTING:-1}"
 RESUME_RUN="${RESUME_RUN:-0}"
-BENCHMARK_INPUT_MODE="${BENCHMARK_INPUT_MODE:-rotating_vram_pool}"
+BENCHMARK_INPUT_MODE="${BENCHMARK_INPUT_MODE:-}"
 BENCHMARK_STRIDE_POLICY="${BENCHMARK_STRIDE_POLICY:-fixed_4_1_0}"
 BENCHMARK_INPUT_POOL_TARGET_BYTES="${BENCHMARK_INPUT_POOL_TARGET_BYTES:-1073741824}"
 BENCHMARK_WARMUP_ITERS="${BENCHMARK_WARMUP_ITERS:-50}"
 BENCHMARK_MEASURE_ITERS="${BENCHMARK_MEASURE_ITERS:-100}"
 BENCHMARK_FIXED_VRAM_INPUT="${CUTLASS_BENCHMARK_FIXED_VRAM_INPUT:-0}"
-PRIORITY_STRATEGY="${PRIORITY_STRATEGY:-b70_learned_sg_tiers_v1}"
+BENCHMARK_REUSE_WORKSPACE="${CUTLASS_BENCHMARK_REUSE_WORKSPACE:-1}"
+PRIORITY_STRATEGY="${PRIORITY_STRATEGY:-b70_learned_sg_tiers_v3}"
 PRIORITY_STATE_PATH="${PRIORITY_STATE_PATH:-$RUNS_DIR/exact_shape_priority_state.json}"
 PRIORITY_TOP_K="${PRIORITY_TOP_K:-128}"
 ACTIVE_SHAPE_TAG=""
@@ -78,6 +79,7 @@ WORKER_SYNC_FILES=(
   tools/intel_gemm_profiler/device_target.py
   tools/intel_gemm_profiler/dispatch.py
   tools/intel_gemm_profiler/hw_specs.py
+  tools/intel_gemm_profiler/mixed_dtype_codegen.py
   tools/intel_gemm_profiler/prefilter.py
   tools/intel_gemm_profiler/phase_a.py
   tools/intel_gemm_profiler/runner.py
@@ -176,6 +178,63 @@ apply_perf_env() {
   export SYCL_PROGRAM_COMPILE_OPTIONS="${SYCL_PROGRAM_COMPILE_OPTIONS:--ze-opt-large-register-file -gline-tables-only}"
   export IGC_VectorAliasBBThreshold="${IGC_VectorAliasBBThreshold:-10000}"
   export IGC_ExtraOCLOptions="${IGC_ExtraOCLOptions:--cl-intel-256-GRF-per-thread}"
+  export CUTLASS_BENCHMARK_INPUT_MODE="$BENCHMARK_INPUT_MODE"
+  export CUTLASS_BENCHMARK_FIXED_VRAM_INPUT="$BENCHMARK_FIXED_VRAM_INPUT"
+  export CUTLASS_BENCHMARK_REUSE_WORKSPACE="$BENCHMARK_REUSE_WORKSPACE"
+}
+
+normalize_benchmark_input_mode() {
+  local requested_mode="${BENCHMARK_INPUT_MODE:-}"
+  local legacy_fixed="${BENCHMARK_FIXED_VRAM_INPUT:-0}"
+  local canonical_mode=""
+  local canonical_fixed=""
+
+  case "$legacy_fixed" in
+    ""|0|1) ;;
+    *) fail "CUTLASS_BENCHMARK_FIXED_VRAM_INPUT must be 0 or 1, got: $legacy_fixed" ;;
+  esac
+
+  if [ -z "$requested_mode" ]; then
+    if [ "$legacy_fixed" = "1" ]; then
+      requested_mode="fixed_buffer"
+    else
+      requested_mode="rotating_vram_pool"
+    fi
+  fi
+
+  case "$requested_mode" in
+    rotating_vram_pool)
+      canonical_mode="rotating_vram_pool"
+      canonical_fixed="0"
+      ;;
+    fixed_buffer|fixed_vram_input)
+      canonical_mode="fixed_buffer"
+      canonical_fixed="1"
+      ;;
+    *)
+      fail "BENCHMARK_INPUT_MODE must be one of: rotating_vram_pool, fixed_buffer"
+      ;;
+  esac
+
+  if [ "$legacy_fixed" != "$canonical_fixed" ]; then
+    if [ "${CUTLASS_BENCHMARK_FIXED_VRAM_INPUT+x}" = "x" ]; then
+      fail "BENCHMARK_INPUT_MODE=$canonical_mode conflicts with CUTLASS_BENCHMARK_FIXED_VRAM_INPUT=$legacy_fixed"
+    fi
+    legacy_fixed="$canonical_fixed"
+  fi
+
+  BENCHMARK_INPUT_MODE="$canonical_mode"
+  BENCHMARK_FIXED_VRAM_INPUT="$canonical_fixed"
+}
+
+normalize_benchmark_workspace_reuse() {
+  case "${BENCHMARK_REUSE_WORKSPACE:-}" in
+    ""|0|1) ;;
+    *) fail "CUTLASS_BENCHMARK_REUSE_WORKSPACE must be 0 or 1, got: ${BENCHMARK_REUSE_WORKSPACE}" ;;
+  esac
+  if [ -z "${BENCHMARK_REUSE_WORKSPACE:-}" ]; then
+    BENCHMARK_REUSE_WORKSPACE="1"
+  fi
 }
 
 parse_gpu_ids() {
@@ -509,6 +568,7 @@ benchmark_doc = {
     "warmup_iters": int("${BENCHMARK_WARMUP_ITERS}"),
     "measure_iters": int("${BENCHMARK_MEASURE_ITERS}"),
     "fixed_vram_input": "${BENCHMARK_FIXED_VRAM_INPUT}" == "1",
+    "workspace_reuse_enabled": "${BENCHMARK_REUSE_WORKSPACE}" == "1",
     "phase_timing_enabled": "${CUTLASS_BENCHMARK_PHASE_TIMING:-0}" == "1",
 }
 (run_dir / "benchmark_config.json").write_text(json.dumps(benchmark_doc, indent=2) + "\n", encoding="utf-8")
@@ -553,6 +613,7 @@ benchmark_input_pool_target_bytes=$BENCHMARK_INPUT_POOL_TARGET_BYTES
 benchmark_warmup_iters=$BENCHMARK_WARMUP_ITERS
 benchmark_measure_iters=$BENCHMARK_MEASURE_ITERS
 benchmark_fixed_vram_input=$BENCHMARK_FIXED_VRAM_INPUT
+benchmark_workspace_reuse=$BENCHMARK_REUSE_WORKSPACE
 priority_strategy=$PRIORITY_STRATEGY
 priority_state_path=$PRIORITY_STATE_PATH
 priority_top_k=$PRIORITY_TOP_K
@@ -870,42 +931,50 @@ run_shape_worker() {
       continue
     fi
 
-    echo "kernel,tflops,avg_runtime_ms,total_runtime_ms,measure_iters,warmup_iters,latency_source,status,gpu,m,n,k" > "$result_csv"
+    echo "kernel,tflops,avg_runtime_ms,total_runtime_ms,measure_iters,warmup_iters,input_mode,workspace_bytes,input_bytes_per_buffer,input_pool_target_bytes,input_pool_buffers,fixed_vram_input,prebuilt_variants,workspace_reuse_enabled,latency_source,status,gpu,m,n,k" > "$result_csv"
     mapfile -t kernels < "$manifest_path"
+    set +e
+    out=$(timeout "$TIMEOUT" "$bin" --kernel_file="$manifest_path" --m="$shape_m" --n="$shape_n" --k="$shape_k" 2>&1)
+    rc=$?
+    set -e
     for kernel in "${kernels[@]}"; do
       [ -n "$kernel" ] || continue
 
-      set +e
-      out=$(timeout "$TIMEOUT" "$bin" --kernel="$kernel" --m="$shape_m" --n="$shape_n" --k="$shape_k" 2>&1)
-      rc=$?
-      set -e
-
-      tf=$(echo "$out" | grep -m1 -oP 'median_tflops=\K[0-9.]+' || echo "0")
-      avg_runtime_ms=$(echo "$out" | grep -m1 -oP 'avg_runtime_ms=\K[0-9.]+' || echo "")
-      total_runtime_ms=$(echo "$out" | grep -m1 -oP 'total_runtime_ms=\K[0-9.]+' || echo "")
-      measure_iters=$(echo "$out" | grep -m1 -oP 'measure_iters=\K[0-9]+' || echo "")
-      warmup_iters=$(echo "$out" | grep -m1 -oP 'warmup_iters=\K[0-9]+' || echo "")
-      status=$(echo "$out" | grep -oP 'STATUS=\K[A-Z]+' | head -1 || true)
+      result_line=$(printf '%s\n' "$out" | grep -F "RESULT kernel=$kernel " | tail -1 || true)
+      tf=$(printf '%s\n' "$result_line" | grep -m1 -oP 'median_tflops=\K[0-9.]+' || echo "0")
+      avg_runtime_ms=$(printf '%s\n' "$result_line" | grep -m1 -oP 'avg_runtime_ms=\K[0-9.]+' || echo "")
+      total_runtime_ms=$(printf '%s\n' "$result_line" | grep -m1 -oP 'total_runtime_ms=\K[0-9.]+' || echo "")
+      measure_iters=$(printf '%s\n' "$result_line" | grep -m1 -oP 'measure_iters=\K[0-9]+' || echo "")
+      warmup_iters=$(printf '%s\n' "$result_line" | grep -m1 -oP 'warmup_iters=\K[0-9]+' || echo "")
+      input_mode=$(printf '%s\n' "$result_line" | grep -m1 -oP 'input_mode=\K[^ ]+' || echo "$BENCHMARK_INPUT_MODE")
+      workspace_bytes=$(printf '%s\n' "$result_line" | grep -m1 -oP 'workspace_bytes=\K[0-9.]+' || echo "")
+      input_bytes_per_buffer=$(printf '%s\n' "$result_line" | grep -m1 -oP 'input_bytes_per_buffer=\K[0-9.]+' || echo "")
+      input_pool_target_bytes=$(printf '%s\n' "$result_line" | grep -m1 -oP 'input_pool_target_bytes=\K[0-9.]+' || echo "")
+      input_pool_buffers=$(printf '%s\n' "$result_line" | grep -m1 -oP 'input_pool_buffers=\K[0-9]+' || echo "")
+      fixed_vram_input=$(printf '%s\n' "$result_line" | grep -m1 -oP 'fixed_vram_input=\K[0-9]+' || echo "$BENCHMARK_FIXED_VRAM_INPUT")
+      prebuilt_variants=$(printf '%s\n' "$result_line" | grep -m1 -oP 'prebuilt_variants=\K[0-9]+' || echo "")
+      workspace_reuse_enabled=$(printf '%s\n' "$result_line" | grep -m1 -oP 'workspace_reuse_enabled=\K[0-9]+' || echo "$BENCHMARK_REUSE_WORKSPACE")
+      status=$(printf '%s\n' "$result_line" | grep -oP 'STATUS=\K[A-Z]+' | head -1 || true)
       if [ -n "$status" ]; then
         :
-      elif echo "$out" | grep -q 'RESULT kernel='; then
-        status="OK"
       elif [ "$rc" -eq 124 ]; then
         status="TIMEOUT"
-      elif echo "$out" | grep -q 'NOT_FOUND'; then
+      elif printf '%s\n' "$out" | grep -q "NOT_FOUND kernel=$kernel"; then
         status="NOT_FOUND"
+      elif [ -n "$result_line" ]; then
+        status="OK"
       else
-        [ -n "$status" ] || status="FAIL"
+        status="FAIL"
       fi
-      cleanup_worker_descendants "$worker_pid" "$shape_tag" "$gpu" "kernel_${batch_id}"
 
       latency_source=""
       if [ -n "$total_runtime_ms" ] || [ -n "$avg_runtime_ms" ]; then
         latency_source="reported"
       fi
 
-      echo "$kernel,$tf,$avg_runtime_ms,$total_runtime_ms,$measure_iters,$warmup_iters,$latency_source,$status,$gpu,$shape_m,$shape_n,$shape_k" >> "$result_csv"
+      echo "$kernel,$tf,$avg_runtime_ms,$total_runtime_ms,$measure_iters,$warmup_iters,$input_mode,$workspace_bytes,$input_bytes_per_buffer,$input_pool_target_bytes,$input_pool_buffers,$fixed_vram_input,$prebuilt_variants,$workspace_reuse_enabled,$latency_source,$status,$gpu,$shape_m,$shape_n,$shape_k" >> "$result_csv"
     done
+    cleanup_worker_descendants "$worker_pid" "$shape_tag" "$gpu" "batch_${batch_id}"
 
     cleanup_worker_descendants "$worker_pid" "$shape_tag" "$gpu" "post_${batch_id}"
     log "shape=$shape_tag gpu=$gpu $batch_id done"
@@ -1023,6 +1092,8 @@ PY
 main() {
   parse_gpu_ids
   parse_shapes
+  normalize_benchmark_input_mode
+  normalize_benchmark_workspace_reuse
   setup_env
   lock_gpu_frequency
   kill_existing_runs

@@ -4,6 +4,7 @@
 #################################################################################################
 
 import statistics
+from pathlib import Path
 
 from .candidate_entries import (
     build_compiler_profile_probe_entries,
@@ -24,6 +25,7 @@ from .runner import (
     collect_environment_metadata,
     run_entries_with_benchmark,
     run_entries_with_streamk_example,
+    run_entries_with_weight_only_example,
 )
 from .utils import shell_init_with_env, shell_join, write_json
 
@@ -110,6 +112,8 @@ def run_phase_a_probe(args, shapes_doc, base_constraints, profiles, reports_dir,
         args.shell_init,
         args.benchmark_exe,
         args.streamk_example_exe,
+        args.mixed_bf16_s8_example_exe,
+        args.mixed_f16_s8_example_exe,
         cwd=args.cwd,
     )
     static_constraints = apply_static_probe_constraints(base_constraints, env_caps)
@@ -117,16 +121,23 @@ def run_phase_a_probe(args, shapes_doc, base_constraints, profiles, reports_dir,
         static_constraints["device_arch"],
         getattr(args, "hw_spec_id", "") or profiles.get("device_target_detection", {}).get("resolved_hw_spec_id", ""),
     )
-    allowed_runners = (
-        ("benchmark", "streamk_example")
-        if env_caps["executables"].get("streamk_example_available")
-        else ("benchmark",)
-    )
+    allowed_runners = ["benchmark"]
+    if env_caps["executables"].get("streamk_example_available"):
+        allowed_runners.append("streamk_example")
+    if env_caps["executables"].get("mixed_bf16_s8_example_available"):
+        allowed_runners.append("mixed_bf16_s8_example")
+    if env_caps["executables"].get("mixed_f16_s8_example_available"):
+        allowed_runners.append("mixed_f16_s8_example")
+    allowed_runners = tuple(allowed_runners)
     static_candidate_space = generate_candidate_space(
         shapes_doc,
         static_constraints,
         profiles,
         allowed_runners=allowed_runners,
+        catalog_source=getattr(args, "kernel_catalog_source", "persisted"),
+        catalog_path=Path(args.kernel_catalog_path) if getattr(args, "kernel_catalog_path", "") else None,
+        generator_arch=getattr(args, "generator_arch", "bmg"),
+        generator_instantiation_level=getattr(args, "generator_instantiation_level", 0),
         prefilter_strategy=getattr(args, "prefilter", "none"),
     )
     probe_rows = []
@@ -136,12 +147,20 @@ def run_phase_a_probe(args, shapes_doc, base_constraints, profiles, reports_dir,
     effective_probe_mode = args.probe_mode
     if effective_probe_mode == "auto":
         effective_probe_mode = "static" if args.skip_run else "run"
+    if effective_probe_mode == "run" and getattr(args, "kernel_catalog_source", "") == "weight_only_codegen":
+        effective_probe_mode = "static"
     if effective_probe_mode == "run" and not args.skip_run and probe_entries:
         probe_benchmark_entries = [
             entry for entry in probe_entries if entry["candidate"].get("runner", "benchmark") == "benchmark"
         ]
         probe_streamk_entries = [
             entry for entry in probe_entries if entry["candidate"].get("runner") == "streamk_example"
+        ]
+        probe_mixed_bf16_s8_entries = [
+            entry for entry in probe_entries if entry["candidate"].get("runner") == "mixed_bf16_s8_example"
+        ]
+        probe_mixed_f16_s8_entries = [
+            entry for entry in probe_entries if entry["candidate"].get("runner") == "mixed_f16_s8_example"
         ]
         if probe_benchmark_entries:
             probe_log = logs_dir / "probe.log"
@@ -169,6 +188,30 @@ def run_phase_a_probe(args, shapes_doc, base_constraints, profiles, reports_dir,
             )
             probe_rows.extend(rows)
             probe_logs.extend(str(logs_dir / f"{entry['bm_name']}.log") for entry in probe_streamk_entries)
+            probe_commands.extend(commands)
+        if probe_mixed_bf16_s8_entries:
+            rows, commands = run_entries_with_weight_only_example(
+                probe_mixed_bf16_s8_entries,
+                logs_dir,
+                args.mixed_bf16_s8_example_exe,
+                cwd=args.cwd,
+                shell_init=base_runtime_shell_init,
+                timeout=args.timeout,
+            )
+            probe_rows.extend(rows)
+            probe_logs.extend(str(logs_dir / f"{entry['bm_name']}.log") for entry in probe_mixed_bf16_s8_entries)
+            probe_commands.extend(commands)
+        if probe_mixed_f16_s8_entries:
+            rows, commands = run_entries_with_weight_only_example(
+                probe_mixed_f16_s8_entries,
+                logs_dir,
+                args.mixed_f16_s8_example_exe,
+                cwd=args.cwd,
+                shell_init=base_runtime_shell_init,
+                timeout=args.timeout,
+            )
+            probe_rows.extend(rows)
+            probe_logs.extend(str(logs_dir / f"{entry['bm_name']}.log") for entry in probe_mixed_f16_s8_entries)
             probe_commands.extend(commands)
     dpas_probe = {"status": "skipped", "reason": "probe mode disabled or benchmark unavailable"}
     compiler_flags_probe = {"results": [], "selected_profile_ids": {}}
